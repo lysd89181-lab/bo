@@ -2,17 +2,24 @@
 import {
   db, $, $$, esc, money, num, setCurrency, fmtDate, toInput, fromInput, startOfDay, addMonths, daysLeft,
   monthsCeil, tsMs, ago, leftText, DAY, normPhone, waLink, fill, copyText, icon, RIDGE, toast, modal,
-  confirmBox, busy, empty, requireUser, shell, animate, safeImg,
+  confirmBox, busy, empty, requireUser, shell, animate, safeImg, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification,
   collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, addDoc, serverTimestamp
 } from './core.js';
 
 /* ================= الحالة ================= */
-const DEFAULT_TPL = {
+const DEFAULT_TPL_EN = {
+  account: 'Hi {name} 👋\nYour {product} subscription details:\n\n📧 Email: {email}\n🔑 Password: {password}\n👤 Profile: {file}\n📅 Ends on: {expiry_date}\n\nThanks for your trust 🌟',
+  code: 'Hi {name} 👋\nYour {product} code:\n\n{code}\n\nThanks for your trust 🌟',
+  number: 'Hi {name} 👋\nYour number ({country}):\n\n{number}\n\nThanks for your trust 🌟',
+  reminder: 'Hi {name} 👋\nYour {product} subscription (profile {file}) ends on {expiry_date}.\nWould you like to renew?'
+};
+const DEFAULT_TPL_AR = {
   account: 'مرحباً {name} 👋\nتفاصيل اشتراكك في {product}:\n\n📧 الإيميل: {email}\n🔑 كلمة المرور: {password}\n👤 الملف: {file}\n📅 ينتهي في: {expiry_date}\n\nشكراً لثقتك 🌟',
   code: 'مرحباً {name} 👋\nكود {product} متاعك:\n\n{code}\n\nشكراً لثقتك 🌟',
   number: 'مرحباً {name} 👋\nرقمك ({country}):\n\n{number}\n\nشكراً لثقتك 🌟',
   reminder: 'مرحباً {name} 👋\nاشتراكك في {product} (الملف {file}) ينتهي في {expiry_date}.\nتبي تجدد؟'
 };
+const DEFAULT_TPL = isEN ? DEFAULT_TPL_EN : DEFAULT_TPL_AR;
 const TPL_VARS = {
   account: ['name', 'product', 'email', 'password', 'file', 'expiry_date'],
   code: ['name', 'product', 'code'],
@@ -27,11 +34,10 @@ const COUNTRIES = ['أمريكا', 'بريطانيا', 'كندا', 'ألماني
 
 const S = {
   profile: null, products: [], files: [], codes: [], numbers: [], customers: [], sales: [],
-  tpl: { ...DEFAULT_TPL }, plans: [], platform: {}, requests: [], methods: [],
+  tpl: { ...DEFAULT_TPL }, plans: [], platform: {}, requests: [], methods: [], banners: [], subCur: null, bIdx: 0,
   loaded: new Set(), started: false,
   f: { ptab: 'account', fst: 'all', fprod: 'all', sq: '', stype: 'all', smonth: 'all', cq: '', nq: '', ncountry: 'all', homeProd: null }
 };
-const NEED = 12;
 const uid = () => S.profile.id;
 const mcol = name => collection(db, 'merchants', uid(), name);
 const mdoc = (name, id) => doc(db, 'merchants', uid(), name, id);
@@ -62,7 +68,6 @@ function accCost(p, start, end) {
   const used = Math.max(0, Math.min(end, p.accountEnd) - Math.max(start, p.accountStart));
   return round2((num(p.purchasePrice) / (p.totalFiles || 1)) * (used / total));
 }
-const monthsTxt = m => m === 1 ? 'شهر' : m === 2 ? 'شهرين' : m <= 10 ? `${m} أشهر` : `${m} شهر`;
 const monthOpts = (max, sel = 1) => Array.from({ length: max }, (_, i) => i + 1).map(m => `<option value="${m}" ${m === sel ? 'selected' : ''}>${monthsTxt(m)}</option>`).join('');
 function saleBadge(s) {
   if (s.type !== 'account') return '<span class="badge info">مسلّم</span>';
@@ -100,26 +105,43 @@ view.innerHTML = `<div class="empty" style="padding-top:18vh"><p>جاري تحم
 
 let raf = 0;
 const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => render(false)); };
+// بيانات عامة تتحمل دايماً، وبيانات التاجر تتحمل بس لو اشتراكه مفعّل (القواعد تمنعها غير هكي)
+const BASE = ['user', 'plans', 'platform', 'banners', 'methods', 'requests'];
+const MER = ['products', 'files', 'codes', 'numbers', 'customers', 'sales', 'tpl'];
+const isDeleted = () => S.profile.status === 'deleted';
+const ready = () => BASE.every(k => S.loaded.has(k)) && (isDeleted() || !isActive() || MER.every(k => S.loaded.has(k)));
 function arrived(k) {
   S.loaded.add(k);
-  if (!S.started && S.loaded.size >= NEED) { S.started = true; render(true); }
+  if (!S.started && ready()) { S.started = true; render(true); }
   else if (S.started) schedule();
 }
 const onErr = e => { console.error(e); toast('تعذر تحميل بعض البيانات. تحقق من الإنترنت.', 'bad'); };
-const listList = (name, ref) => onSnapshot(ref, snap => { S[name] = snap.docs.map(d => ({ id: d.id, ...d.data() })); arrived(name); }, onErr);
+let merUnsubs = [];
+function startMerchant() {
+  if (merUnsubs.length) return;
+  const sub = (name, ref) => onSnapshot(ref, snap => { S[name] = snap.docs.map(d => ({ id: d.id, ...d.data() })); arrived(name); }, onErr);
+  merUnsubs = ['products', 'files', 'codes', 'numbers', 'customers', 'sales'].map(n => sub(n, mcol(n)));
+  merUnsubs.push(onSnapshot(mdoc('settings', 'templates'), s => { S.tpl = { ...DEFAULT_TPL, ...(s.exists() ? s.data() : {}) }; arrived('tpl'); }, onErr));
+}
+function stopMerchant() {
+  merUnsubs.forEach(u => u()); merUnsubs = [];
+  MER.forEach(k => S.loaded.delete(k));
+  ['products', 'files', 'codes', 'numbers', 'customers', 'sales'].forEach(n => { S[n] = []; });
+}
 
 onSnapshot(doc(db, 'users', uid()), s => {
-  const wasActive = S.started && isActive();
+  const was = S.started ? (isActive() ? 'on' : 'off') + isDeleted() : null;
   S.profile = { id: s.id, ...s.data() };
   setCurrency(S.profile.currency);
   UI.setMe(S.profile.displayName || S.profile.email, planLine());
+  if (isActive() && !isDeleted()) startMerchant(); else stopMerchant();
+  const now = (isActive() ? 'on' : 'off') + isDeleted();
+  if (S.started && was !== now) { S.started = false; }   // تغيّرت الحالة: نعيد العرض بعد ما تتحمل البيانات
   arrived('user');
-  if (S.started && wasActive !== isActive()) render(true);
 }, onErr);
-['products', 'files', 'codes', 'numbers', 'customers', 'sales'].forEach(n => listList(n, mcol(n)));
-onSnapshot(mdoc('settings', 'templates'), s => { S.tpl = { ...DEFAULT_TPL, ...(s.exists() ? s.data() : {}) }; arrived('tpl'); }, onErr);
 onSnapshot(collection(db, 'plans'), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); arrived('plans'); }, onErr);
 onSnapshot(doc(db, 'settings', 'platform'), s => { S.platform = s.exists() ? s.data() : {}; arrived('platform'); }, onErr);
+onSnapshot(collection(db, 'banners'), s => { S.banners = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(b => b.active !== false && safeImg(b.image)).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('banners'); }, onErr);
 onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.active !== false).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
 onSnapshot(query(collection(db, 'subscriptionRequests'), where('merchantId', '==', uid())), s => {
   S.requests = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt)); arrived('requests');
@@ -132,7 +154,9 @@ const VIEWS = { home: vHome, products: vProducts, files: vFiles, sales: vSales, 
 function render(fresh) {
   let r = (location.hash || '#home').slice(1);
   if (!VIEWS[r]) r = 'home';
-  if (!isActive() && r !== 'settings') { UI.setActive(''); vGate(); }
+  if (isDeleted()) { UI.setActive(''); vDeleted(); }
+  else if (needsVerify()) { UI.setActive(''); vVerify(); }
+  else if (!isActive()) { UI.setActive(''); vGate(); }
   else { UI.setActive(r); VIEWS[r](); }
   if (fresh) { animate(view); window.scrollTo(0, 0); } else view.classList.remove('anim');
   const u = urgentCount();
@@ -162,7 +186,7 @@ function salesRows(list, actions = true) {
     <td><span class="ltr">${esc(s.itemLabel || '')}</span></td>
     <td><span class="tag">${TYPE_TXT[s.type]}</span></td>
     <td class="num"><span class="price">${money(s.price)}</span></td>
-    <td class="num ${s.profit < 0 ? '' : ''}" style="color:${s.profit < 0 ? '#FCA5A5' : '#5EEAD4'}">${money(s.profit)}</td>
+    <td class="num ${s.profit < 0 ? 't-bad' : 't-ok'}">${money(s.profit)}</td>
     <td class="num">${fmtDate(s.date)}</td>
     <td>${saleBadge(s)}</td>
     ${actions ? `<td><button class="iconbtn sm" data-act="resend" data-id="${s.id}" aria-label="إعادة إرسال">${icon('send')}</button></td>` : ''}
@@ -211,6 +235,7 @@ function vHome() {
       </div>
     </aside>
     <div class="dash-main">
+      ${bannersHTML()}
       <section class="hero rv">
         ${RIDGE}
         <h1>مرحباً، ${esc(name || 'بيك')}</h1>
@@ -378,7 +403,7 @@ function vSales() {
     }).sort((a, b) => b.date - a.date);
     const rev = list.reduce((a, s) => a + num(s.price), 0), prof = list.reduce((a, s) => a + num(s.profit), 0);
     $('#slist').innerHTML = `
-      <div class="sumbar"><div><small>عدد العمليات</small><b>${list.length}</b></div><div><small>الإيراد</small><b>${money(rev)}</b></div><div><small>صافي الربح</small><b style="color:#5EEAD4">${money(prof)}</b></div></div>
+      <div class="sumbar"><div><small>عدد العمليات</small><b>${list.length}</b></div><div><small>الإيراد</small><b>${money(rev)}</b></div><div><small>صافي الربح</small><b class="t-ok">${money(prof)}</b></div></div>
       ${list.length ? `<div class="tbl card" style="padding:0"><table>${salesHead()}<tbody>${salesRows(list.slice(0, 300))}</tbody></table></div>` : `<div class="card">${empty('cart', 'ما فيش مبيعات تطابق الفلتر.')}</div>`}`;
   };
   $('#sq').oninput = e => { S.f.sq = e.target.value; draw(); };
@@ -433,7 +458,7 @@ function vSettings() {
       <h2 style="margin-bottom:16px">بياناتك</h2>
       <div class="field"><label>الاسم أو اسم المتجر</label><input id="stName" maxlength="80" value="${esc(pr.displayName || '')}"></div>
       <div class="grid2"><div class="field"><label>رقم الواتساب</label><input id="stPhone" dir="ltr" maxlength="30" value="${esc(pr.phone || '')}"></div>
-        <div class="field"><label>العملة</label><select id="stCur">${[['$', 'دولار ($)'], ['د.ل', 'دينار ليبي (د.ل)']].map(([v, l]) => `<option value="${v}" ${pr.currency === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+        <div class="field"><label>العملة</label><select id="stCur">${[['$', 'دولار ($)'], ['د.ل', 'دينار ليبي (د.ل)'], ['ر.س', 'ريال سعودي (ر.س)']].map(([v, l]) => `<option value="${v}" ${pr.currency === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
       <div class="field"><label>البريد الإلكتروني</label><input value="${esc(pr.email)}" disabled dir="ltr"></div>
       <button class="btn amber" id="stSave">حفظ البيانات</button>
     </section>
@@ -469,8 +494,70 @@ function reqList() {
   if (!S.requests.length) return '';
   const st = { pending: ['warn', 'قيد المراجعة'], approved: ['ok', 'تم التفعيل'], rejected: ['bad', 'مرفوض'] };
   return `<div style="margin-top:20px"><h3 style="margin-bottom:10px">طلباتك</h3><div class="rems">${S.requests.slice(0, 5).map(r => `
-    <div class="rem" style="grid-template-columns:1fr auto"><div><b>${esc(r.planName)}، ${money(r.price)}</b><small>${tsMs(r.createdAt) ? ago(tsMs(r.createdAt)) : 'الآن'}${r.adminNote ? '، ' + esc(r.adminNote) : ''}</small></div><span class="badge ${st[r.status]?.[0] || 'off'}">${st[r.status]?.[1] || r.status}</span></div>`).join('')}</div></div>`;
+    <div class="rem" style="grid-template-columns:1fr auto"><div><b>${esc(r.planName)}، ${r.currency ? moneyIn(r.price, r.currency) : money(r.price)}</b><small>${tsMs(r.createdAt) ? ago(tsMs(r.createdAt)) : 'الآن'}${r.adminNote ? '، ' + esc(r.adminNote) : ''}</small></div><span class="badge ${st[r.status]?.[0] || 'off'}">${st[r.status]?.[1] || r.status}</span></div>`).join('')}</div></div>`;
 }
+
+/* ================= البنرات ================= */
+function bannersHTML() {
+  if (!S.banners.length) return '';
+  const i = S.bIdx % S.banners.length;
+  return `<section class="banners rv" aria-label="عروض"><div class="slides">${S.banners.map((b, k) => {
+    const href = bannerHref(b.linkType, b.linkValue);
+    const img = `<img src="${safeImg(b.image)}" alt="${esc(b.title || '')}" loading="lazy">`;
+    return href ? `<a class="slide ${k === i ? 'on' : ''}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${img}</a>` : `<div class="slide ${k === i ? 'on' : ''}">${img}</div>`;
+  }).join('')}</div>${S.banners.length > 1 ? `<div class="dots">${S.banners.map((_, k) => `<button type="button" class="${k === i ? 'on' : ''}" data-act="bannerGo" data-id="${k}" aria-label="${k + 1}"></button>`).join('')}</div>` : ''}</section>`;
+}
+function showBanner(k) {
+  S.bIdx = k;
+  $$('.banners').forEach(box => {
+    $$('.slide', box).forEach((sl, j) => sl.classList.toggle('on', j === k % S.banners.length));
+    $$('.dots button', box).forEach((d, j) => d.classList.toggle('on', j === k % S.banners.length));
+  });
+}
+setInterval(() => { if (S.banners.length > 1 && $('.banners') && !document.hidden) showBanner((S.bIdx + 1) % S.banners.length); }, 5000);
+// سحب البنر باليد على الهاتف
+let tx = null;
+document.addEventListener('touchstart', e => { tx = e.target.closest('.banners') ? e.touches[0].clientX : null; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (tx == null || S.banners.length < 2) return;
+  const dx = e.changedTouches[0].clientX - tx; tx = null;
+  if (Math.abs(dx) > 40) showBanner((S.bIdx + ((dx < 0) === (document.dir === 'rtl') ? -1 : 1) + S.banners.length) % S.banners.length);
+}, { passive: true });
+
+/* ================= حساب محذوف ================= */
+function vDeleted() {
+  view.innerHTML = `<div class="gate"><section class="card rv">${empty('ban', 'حسابك محذوف. تواصل مع إدارة المنصة لو عندك استفسار.')}</section></div>`;
+}
+
+/* ================= تأكيد البريد ================= */
+let lastSend = 0;
+function vVerify() {
+  const u = auth.currentUser;
+  view.innerHTML = `
+  <div class="gate">
+    <section class="hero rv">${RIDGE}
+      <h1>أكّد بريدك الإلكتروني</h1>
+      <p class="muted">بعتنالك رابط تأكيد على <b class="ltr" data-raw>${esc(u?.email || '')}</b></p>
+    </section>
+    <section class="card glow rv" style="margin-top:22px">
+      <p style="margin-bottom:8px">افتح الرسالة واضغط الرابط، وبعدين ارجع هنا واضغط "تأكدت".</p>
+      <p class="muted small" style="margin-bottom:18px">لو ما لقيتهاش، شوف مجلد الرسائل غير المرغوب فيها (Spam).</p>
+      <div class="row"><button class="btn amber" id="vDone">${icon('check')} تأكدت</button><button class="btn ghost" id="vSend">${icon('send')} إعادة إرسال الرابط</button></div>
+    </section>
+  </div>`;
+  $('#vDone').onclick = e => busy(e.currentTarget, async () => {
+    await auth.currentUser.reload();
+    if (!auth.currentUser.emailVerified) { toast('البريد لسه ما تأكدش. افتح الرابط من الإيميل وجرّب مرة ثانية.', 'bad'); return; }
+    await auth.currentUser.getIdToken(true);   // تحديث التوكن باش القواعد تشوف التأكيد
+    location.reload();
+  });
+  $('#vSend').onclick = e => busy(e.currentTarget, async () => {
+    if (Date.now() - lastSend < 60000) { toast('استنى دقيقة قبل ما تطلب رابط جديد.', 'bad'); return; }
+    auth.languageCode = isEN ? 'en' : 'ar';
+    await sendEmailVerification(auth.currentUser); lastSend = Date.now(); toast('تم إرسال رابط جديد');
+  });
+}
+const needsVerify = () => S.profile.role !== 'admin' && auth.currentUser && !auth.currentUser.emailVerified;
 
 /* ================= بوابة الاشتراك ================= */
 function vGate() {
@@ -478,28 +565,35 @@ function vGate() {
   const pending = S.requests.find(r => r.status === 'pending');
   view.innerHTML = `
   <div class="gate">
+    ${bannersHTML() ? `<div style="margin-bottom:22px">${bannersHTML()}</div>` : ''}
     <section class="hero rv" style="margin-bottom:22px">${RIDGE}
       <h1>${expired ? 'انتهى اشتراكك' : `أهلاً ${esc((S.profile.displayName || '').split(' ')[0])}، خطوة وحدة وتبدأ`}</h1>
       <p class="muted">${pending ? 'طلبك وصل الإدارة وقيد المراجعة. أول ما يتفعّل تفتح لوحتك تلقائياً.' : expired ? 'بياناتك محفوظة. جدّد الاشتراك باش ترجع تبيع وتعدّل.' : 'اختار مدة الاشتراك، ادفع، وابعت رقم العملية. الإدارة تفعّل حسابك.'}</p>
     </section>
-    <section class="card glow rv">${subscribeHTML()}</section>
+    <section class="card glow rv" id="subBox">${subscribeHTML()}</section>
     ${S.requests.length ? `<section class="card rv" style="margin-top:22px">${reqList()}</section>` : ''}
   </div>`;
-  bindSubscribe(view);
+  bindSubscribe($('#subBox'));
 }
+const activePlans = () => S.plans.filter(p => p.active !== false && Object.keys(planPrices(p)).length).sort((a, b) => a.months - b.months);
+function subCurrencies() { const set = new Set(); activePlans().forEach(p => Object.keys(planPrices(p)).forEach(c => set.add(c))); return Object.keys(CURS).filter(c => set.has(c)); }
 function subscribeHTML() {
-  const plans = S.plans.filter(p => p.active !== false).sort((a, b) => a.months - b.months);
-  if (!plans.length) return empty('card', 'ما فيش خطط اشتراك متاحة حالياً. تواصل مع الإدارة.');
-  const ms = S.methods;
+  const curs = subCurrencies();
+  if (!curs.length) return empty('card', 'ما فيش خطط اشتراك متاحة حالياً. تواصل مع الإدارة.');
+  if (!curs.includes(S.subCur)) S.subCur = curs[0];
+  const cur = S.subCur;
+  const plans = activePlans().filter(p => planPrices(p)[cur] != null);
+  const ms = S.methods.filter(m => !m.currencies?.length || m.currencies.includes(cur));
   return `
+    ${curs.length > 1 ? `<div class="row" style="margin-bottom:18px"><span class="muted">العملة:</span><div class="chips">${curs.map(c => `<button type="button" class="chip ${c === cur ? 'on' : ''}" data-cur="${c}">${CURS[c].name}</button>`).join('')}</div></div>` : ''}
     <h2 style="margin-bottom:14px">1. اختار المدة</h2>
-    <div class="plans" style="margin-bottom:22px">${plans.map((p, i) => `<button type="button" class="plan ${i === 0 ? 'on' : ''}" data-plan="${p.id}"><b>${esc(p.name)}</b><div class="pr">${money(p.price)}</div><small class="dim">${monthsTxt(p.months)}</small></button>`).join('')}</div>
+    <div class="plans" style="margin-bottom:22px">${plans.map((p, i) => `<button type="button" class="plan ${i === 0 ? 'on' : ''}" data-plan="${p.id}"><b data-raw>${esc(p.name)}</b><div class="pr">${moneyIn(planPrices(p)[cur], cur)}</div><small class="dim">${monthsTxt(p.months)}</small></button>`).join('')}</div>
     <h2 style="margin-bottom:14px">2. اختار طريقة الدفع</h2>
-    ${S.platform.paymentInfo ? `<div class="payinfo" style="margin-bottom:14px">${esc(S.platform.paymentInfo)}</div>` : ''}
-    ${ms.length ? `<div class="pmethods">${ms.map(m => `<button type="button" class="pm" data-pm="${m.id}">${safeImg(m.image) ? `<img src="${safeImg(m.image)}" alt="">` : `<span class="ph">${icon('card')}</span>`}<b>${esc(m.name)}</b></button>`).join('')}</div>
-      <div id="pmDetail" hidden></div>` : ''}
-    <div id="pmForm" ${ms.length ? 'hidden' : ''}>
-      ${ms.length ? '' : `<div class="field"><label>دفعت عن طريق</label><input id="rqMethod" maxlength="60" placeholder="مثلاً: ليبيانا، تحويل مصرفي"></div>`}
+    ${S.platform.paymentInfo ? `<div class="payinfo" style="margin-bottom:14px" data-raw>${esc(S.platform.paymentInfo)}</div>` : ''}
+    ${S.methods.length ? (ms.length ? `<div class="pmethods">${ms.map(m => `<button type="button" class="pm" data-pm="${m.id}">${safeImg(m.image) ? `<img src="${safeImg(m.image)}" alt="">` : `<span class="ph">${icon('card')}</span>`}<b data-raw>${esc(m.name)}</b></button>`).join('')}</div>
+      <div id="pmDetail" hidden></div>` : `<p class="muted" style="margin-bottom:14px">ما فيش طرق دفع لهذي العملة.</p>`) : ''}
+    <div id="pmForm" ${S.methods.length ? 'hidden' : ''}>
+      ${S.methods.length ? '' : `<div class="field"><label>دفعت عن طريق</label><input id="rqMethod" maxlength="60"></div>`}
       <div class="field"><label id="rqRefLbl">رقم العملية أو المرسِل</label><input id="rqRef" maxlength="200" dir="auto"></div>
       <div class="field"><label>ملاحظة (اختياري)</label><input id="rqNote" maxlength="300"></div>
       <p class="err" id="rqErr"></p>
@@ -507,6 +601,8 @@ function subscribeHTML() {
     </div>`;
 }
 function bindSubscribe(root) {
+  if (!root) return;
+  $$('[data-cur]', root).forEach(b => b.onclick = () => { S.subCur = b.dataset.cur; root.innerHTML = subscribeHTML(); bindSubscribe(root); });
   const btn = $('#rqSend', root); if (!btn) return;
   let method = null;
   $$('.plan', root).forEach(b => b.onclick = () => $$('.plan', root).forEach(x => x.classList.toggle('on', x === b)));
@@ -515,24 +611,27 @@ function bindSubscribe(root) {
     method = S.methods.find(m => m.id === b.dataset.pm);
     const d = $('#pmDetail', root);
     d.className = 'pdetail';
-    d.innerHTML = (method.fields || []).filter(f => f.value).map(f => `<div class="prow"><div><small>${esc(f.label)}</small><b dir="auto">${esc(f.value)}</b></div><button class="iconbtn sm" type="button" data-act="copy" data-v="${esc(f.value)}" aria-label="نسخ ${esc(f.label)}">${icon('copy')}</button></div>`).join('')
-      + (method.note ? `<p class="small muted" style="white-space:pre-wrap">${esc(method.note)}</p>` : '');
+    d.innerHTML = (method.fields || []).filter(f => f.value).map(f => `<div class="prow" data-raw><div><small>${esc(f.label)}</small><b dir="auto">${esc(f.value)}</b></div><button class="iconbtn sm" type="button" data-act="copy" data-v="${esc(f.value)}" aria-label="${t('نسخ')}">${icon('copy')}</button></div>`).join('')
+      + (method.note ? `<p class="small muted" style="white-space:pre-wrap" data-raw>${esc(method.note)}</p>` : '');
     d.hidden = !d.innerHTML;
     $('#rqRefLbl', root).textContent = method.inputLabel || 'رقم العملية';
+    $('#rqRefLbl', root).toggleAttribute('data-raw', !!method.inputLabel);
     $('#pmForm', root).hidden = false;
     $('#rqErr', root).textContent = '';
   });
   btn.onclick = () => busy(btn, async () => {
+    const cur = S.subCur;
     const plan = S.plans.find(p => p.id === $('.plan.on', root)?.dataset.plan);
     const ref = $('#rqRef', root).value.trim();
     const mName = method ? method.name : ($('#rqMethod', root)?.value.trim() || '');
-    if (!plan) throw new Error('اختار خطة.');
-    if (S.methods.length && !method) throw new Error('اختار طريقة الدفع.');
-    if (!ref) { $('#rqErr', root).textContent = `اكتب ${method?.inputLabel || 'رقم العملية'}.`; return; }
-    if (S.requests.some(r => r.status === 'pending')) throw new Error('عندك طلب قيد المراجعة.');
+    if (!plan) throw new Error(t('اختار خطة.'));
+    if (S.methods.length && !method) throw new Error(t('اختار طريقة الدفع.'));
+    if (!ref) { $('#rqErr', root).textContent = `${t('اكتب')} ${method?.inputLabel || t('رقم العملية')}.`; return; }
+    if (S.requests.some(r => r.status === 'pending')) throw new Error(t('عندك طلب قيد المراجعة.'));
     await addDoc(collection(db, 'subscriptionRequests'), {
       merchantId: uid(), merchantName: (S.profile.displayName || '').slice(0, 80), merchantEmail: S.profile.email,
-      merchantPhone: (S.profile.phone || '').slice(0, 30), planId: plan.id, planName: plan.name, months: plan.months, price: plan.price,
+      merchantPhone: (S.profile.phone || '').slice(0, 30), planId: plan.id, planName: plan.name, months: plan.months,
+      currency: cur, price: planPrices(plan)[cur],
       methodId: method?.id || '', method: mName.slice(0, 60), refLabel: method?.inputLabel || 'رقم العملية',
       reference: ref.slice(0, 200), note: $('#rqNote', root).value.trim().slice(0, 300), status: 'pending', createdAt: serverTimestamp()
     });
@@ -599,7 +698,7 @@ function sellAccount({ file, product }) {
   const calc = () => {
     const start = fromInput($('#sStart', m.el).value) || today, mm = +$('#sM', m.el).value;
     const end = Math.min(addMonths(start, mm), p.accountEnd), cost = accCost(p, start, end);
-    $('#sSum', m.el).innerHTML = `<div><span>ينتهي في</span><b>${fmtDate(end)}${end === p.accountEnd ? ' (نهاية الحساب)' : ''}</b></div><div><span>تكلفة الملف للمدة</span><b>${money(cost)}</b></div><div><span>الربح</span><b style="color:#5EEAD4">${money(num(price.value) - cost)}</b></div>`;
+    $('#sSum', m.el).innerHTML = `<div><span>ينتهي في</span><b>${fmtDate(end)}${end === p.accountEnd ? ' (نهاية الحساب)' : ''}</b></div><div><span>تكلفة الملف للمدة</span><b>${money(cost)}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
     return { start, mm, end, cost };
   };
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
@@ -697,7 +796,7 @@ function renew(f) {
   const price = $('#rPrice', m.el);
   const calc = () => {
     const mm = +$('#rM', m.el).value, end = Math.min(addMonths(start, mm), p.accountEnd), cost = accCost(p, start, end);
-    $('#rSum', m.el).innerHTML = `<div><span>ينتهي الجديد في</span><b>${fmtDate(end)}</b></div><div><span>الربح</span><b style="color:#5EEAD4">${money(num(price.value) - cost)}</b></div>`;
+    $('#rSum', m.el).innerHTML = `<div><span>ينتهي الجديد في</span><b>${fmtDate(end)}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
     return { mm, end, cost };
   };
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
@@ -869,7 +968,7 @@ async function delProduct(p) {
   if (!guardWrite()) return;
   const kids = p.type === 'account' ? filesOf(p.id) : codesOf(p.id);
   const soldNow = p.type === 'account' ? kids.filter(f => f.status === 'sold' && f.endDate > Date.now()).length : 0;
-  const ok = await confirmBox(`حذف "${esc(p.name)}" مع ${kids.length} ${p.type === 'account' ? 'ملف' : 'كود'}؟ سجل المبيعات يبقى محفوظ.${soldNow ? `<br><br><b style="color:#FCA5A5">فيه ${soldNow} ملف عليه اشتراك نشط.</b>` : ''}`, { ok: 'حذف', danger: true, title: 'حذف المنتج' });
+  const ok = await confirmBox(`حذف "${esc(p.name)}" مع ${kids.length} ${p.type === 'account' ? 'ملف' : 'كود'}؟ سجل المبيعات يبقى محفوظ.${soldNow ? `<br><br><b class="t-bad">فيه ${soldNow} ملف عليه اشتراك نشط.</b>` : ''}`, { ok: 'حذف', danger: true, title: 'حذف المنتج' });
   if (!ok) return;
   try {
     const refs = [mdoc('products', p.id), ...kids.map(k => mdoc(p.type === 'account' ? 'files' : 'codes', k.id))];
@@ -951,7 +1050,8 @@ const ACTS = {
   custForm: (id, b, e) => { e.stopPropagation(); custForm(S.customers.find(x => x.id === id)); },
   resend: id => { const s = S.sales.find(x => x.id === id); s && resend(s); },
   insVar: (id, b) => { const t = $('#' + id); const v = b.dataset.v, s = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s) + v + t.value.slice(t.selectionEnd ?? s); t.focus(); t.selectionStart = t.selectionEnd = s + v.length; },
-  subscribe: () => { const m = modal('الاشتراك', subscribeHTML(), { wide: true }); bindSubscribe(m.el); }
+  subscribe: () => { if (needsVerify()) { render(true); return; } const m = modal('الاشتراك', `<div id="subBoxM">${subscribeHTML()}</div>`, { wide: true }); bindSubscribe($('#subBoxM', m.el)); },
+  bannerGo: id => showBanner(+id)
 };
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]');

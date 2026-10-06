@@ -3,6 +3,8 @@ import {
   initializeApp, getAuth, getFirestore, onAuthStateChanged, signOut, doc, getDoc, setDoc, serverTimestamp
 } from './fb.js';
 export * from './fb.js';
+import { LANG, isEN, t, startI18n, getTheme, setTheme, setLang } from './i18n.js';
+export { LANG, isEN, t, startI18n, getTheme, setTheme, setLang };
 
 const firebaseConfig = {
   apiKey: "AIzaSyAPhOPjAgfGhON7ZJGiXAfNf2GFQr-LbvU",
@@ -22,13 +24,18 @@ export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /* ---------- العملة والأرقام ---------- */
+// عملات اشتراك المنصة
+export const CURS = { LYD: { ar: 'د.ل', en: 'LYD', name: 'دينار ليبي' }, SAR: { ar: 'ر.س', en: 'SAR', name: 'ريال سعودي' } };
+const SYM_EN = { 'د.ل': 'LYD', 'ر.س': 'SAR' };
+const fmtNum = n => (Math.round((+n || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
+const withSym = (s, sym) => { sym = esc(sym || '$'); if (sym === '$') return s + '$'; return s + ' ' + (isEN ? (SYM_EN[sym] || sym) : sym); };
 let CUR = '$';
-export const setCurrency = c => { CUR = c || '$'; };
-export const money = n => {
-  const v = Math.round((+n || 0) * 100) / 100;
-  const s = v.toLocaleString('en-US', { maximumFractionDigits: 2 });
-  return CUR === '$' ? s + '$' : s + ' ' + CUR;
-};
+export const setCurrency = c => { CUR = ['$', 'د.ل', 'ر.س'].includes(c) ? c : '$'; };
+export const money = n => withSym(fmtNum(n), CUR);
+// مبلغ بعملة محددة (LYD / SAR) — للاشتراكات
+export const moneyIn = (n, code) => withSym(fmtNum(n), CURS[code]?.ar || '$');
+// أسعار الخطة: تدعم الشكل القديم (price) والجديد (prices)
+export const planPrices = p => { const o = {}; const pr = p?.prices || {}; Object.keys(CURS).forEach(c => { if (pr[c] != null && pr[c] !== '') o[c] = +pr[c]; }); if (!Object.keys(o).length && p?.price != null) o.LYD = +p.price; return o; };
 export const num = v => { const n = parseFloat(String(v ?? '').replace(',', '.')); return isNaN(n) ? 0 : n; };
 
 /* ---------- التواريخ (نخزنها milliseconds) ---------- */
@@ -51,6 +58,7 @@ export const ago = ms => {
   const d = Math.floor(s / 86400);
   return d === 1 ? 'منذ يوم' : `منذ ${d} يوم`;
 };
+export const monthsTxt = m => m === 1 ? 'شهر' : m === 2 ? 'شهرين' : m <= 10 ? `${m} أشهر` : `${m} شهر`;
 export const leftText = ms => {
   const d = daysLeft(ms);
   if (ms < Date.now()) return 'انتهى الاشتراك';
@@ -125,7 +133,7 @@ export const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24"
 let lgId = 0;
 export const LOGO = (cls = '') => {
   const id = 'lgm' + (++lgId);
-  return `<svg class="logo ${cls}" viewBox="88 34 204 202" aria-hidden="true"><defs><linearGradient id="${id}" x1="110" y1="0" x2="270" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#B45309"/><stop offset=".5" stop-color="#F59E0B"/><stop offset="1" stop-color="#FCD34D"/></linearGradient></defs><path d="M142,40 H226 L250,64 V140 H130 V52 Q130,40 142,40 Z" fill="#F8FAFC"/><path d="M226,40 V58 Q226,64 232,64 H250 Z" fill="#F59E0B"/><rect x="156" y="78" width="52" height="5" rx="2.5" fill="#070B19" opacity=".75"/><rect x="156" y="93" width="68" height="5" rx="2.5" fill="#070B19" opacity=".75"/><rect x="156" y="108" width="58" height="5" rx="2.5" fill="#070B19" opacity=".75"/><path d="M112,212 V112 L190,184 L268,112 V212" fill="none" stroke="url(#${id})" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  return `<svg class="logo ${cls}" viewBox="88 34 204 202" aria-hidden="true"><defs><linearGradient id="${id}" x1="110" y1="0" x2="270" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#B45309"/><stop offset=".5" stop-color="#F59E0B"/><stop offset="1" stop-color="#FCD34D"/></linearGradient></defs><path class="paper" d="M142,40 H226 L250,64 V140 H130 V52 Q130,40 142,40 Z" fill="#F8FAFC"/><path d="M226,40 V58 Q226,64 232,64 H250 Z" fill="#F59E0B"/><rect x="156" y="78" width="52" height="5" rx="2.5" fill="#070B19" opacity=".75"/><rect x="156" y="93" width="68" height="5" rx="2.5" fill="#070B19" opacity=".75"/><rect x="156" y="108" width="58" height="5" rx="2.5" fill="#070B19" opacity=".75"/><path d="M112,212 V112 L190,184 L268,112 V212" fill="none" stroke="url(#${id})" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 };
 // تضاريس جبلية خلفية (من روح التصميم)
 export const RIDGE = `<svg class="ridge" viewBox="0 0 800 120" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="rg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F59E0B" stop-opacity=".22"/><stop offset="1" stop-color="#070B19" stop-opacity="0"/></linearGradient></defs><path d="M0 120V82l70-30 50 18 80-52 60 34 46-22 70 44 64-40 90 56 60-26 70 20 60-38 80 46V120Z" fill="url(#rg)"/><path d="M0 82l70-30 50 18 80-52 60 34 46-22 70 44 64-40 90 56 60-26 70 20 60-38 80 46" fill="none" stroke="#F59E0B" stroke-opacity=".35" stroke-width="1.2"/></svg>`;
@@ -221,7 +229,7 @@ export async function ensureUserDoc(u, extra = {}) {
 // نقبل بس صور data:image حتى ما يتحقنش رابط غريب
 export const safeImg = v => (typeof v === 'string' && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v)) ? v : '';
 // ضغط الصورة في المتصفح وتحويلها لـ data URL صغير (يتخزن في Firestore بدون Storage)
-export function compressImage(file, max = 240) {
+export function compressImage(file, max = 240, maxBytes = 300000) {
   return new Promise((res, rej) => {
     if (!file || !/^image\//.test(file.type)) return rej(new Error('اختار ملف صورة.'));
     const r = new FileReader();
@@ -236,13 +244,35 @@ export function compressImage(file, max = 240) {
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         let out = c.toDataURL('image/webp', 0.85);
         if (!out.startsWith('data:image/webp')) out = c.toDataURL('image/png');
-        if (out.length > 300000) return rej(new Error('الصورة كبيرة، جرّب صورة أبسط.'));
+        if (out.length > maxBytes) { out = c.toDataURL('image/jpeg', 0.75); if (out.length > maxBytes) return rej(new Error('الصورة كبيرة، جرّب صورة أبسط.')); }
         res(out);
       };
       img.src = r.result;
     };
     r.readAsDataURL(file);
   });
+}
+
+/* ---------- روابط البنرات ---------- */
+// يبني رابط آمن (http/https أو واتساب فقط) حسب النوع
+export function bannerHref(type, value) {
+  const v = String(value || '').trim();
+  if (!v || type === 'none') return '';
+  const safe = (u, hosts) => { try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return ''; if (hosts && !hosts.some(h => x.hostname === h || x.hostname.endsWith('.' + h))) return ''; return x.href; } catch { return ''; } };
+  if (type === 'whatsapp') return normPhone(v) ? `https://wa.me/${normPhone(v)}` : '';
+  if (type === 'tiktok') return /^https?:/i.test(v) ? safe(v, ['tiktok.com']) : safe(`https://www.tiktok.com/@${v.replace(/^@/, '').replace(/[^\w.]/g, '')}`);
+  if (type === 'facebook') return /^https?:/i.test(v) ? safe(v, ['facebook.com', 'fb.com', 'fb.me']) : safe(`https://www.facebook.com/${v.replace(/^@/, '').replace(/[^\w.\-]/g, '')}`);
+  return safe(/^https?:/i.test(v) ? v : 'https://' + v);
+}
+
+/* ---------- اللغة والمظهر ---------- */
+const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+const MOON = '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/>';
+const themeIcon = () => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${getTheme() === 'light' ? MOON : SUN}</svg>`;
+export const prefsHTML = () => `<div class="prefs"><button class="iconbtn txt" type="button" data-pref="lang" aria-label="تغيير اللغة">${isEN ? 'ع' : 'EN'}</button><button class="iconbtn" type="button" data-pref="theme" aria-label="تغيير المظهر">${themeIcon()}</button></div>`;
+export function bindPrefs(root = document) {
+  $$('[data-pref="lang"]', root).forEach(b => b.onclick = () => setLang(isEN ? 'ar' : 'en'));
+  $$('[data-pref="theme"]', root).forEach(b => b.onclick = () => { setTheme(getTheme() === 'light' ? 'dark' : 'light'); $$('[data-pref="theme"]').forEach(x => x.innerHTML = themeIcon()); });
 }
 
 /* ---------- الهيكل (Sidebar + Header) ---------- */
@@ -255,6 +285,7 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
       ${extra}
       <div class="side-foot">
         <div class="me"><div class="avatar" id="meAv"></div><div><b id="meName"></b><small id="meSub"></small></div></div>
+        <div class="side-prefs">${prefsHTML()}</div>
         <button class="btn ghost sm full" id="logout">${icon('logout')} تسجيل الخروج</button>
       </div>
     </aside>
@@ -264,6 +295,7 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
         <button class="iconbtn menu" id="menuBtn" aria-label="القائمة">${icon('menu')}</button>
         <div class="search">${icon('search')}<input id="q" type="search" placeholder="${searchPh}" autocomplete="off" aria-label="بحث"><div class="sres" id="sres" hidden></div></div>
         <a class="iconbtn bell" href="${bellHref}" aria-label="التنبيهات">${icon('bell')}<i class="dotc" id="bellc" hidden></i></a>
+        ${prefsHTML()}
       </header>
       <section id="view"></section>
     </main>
@@ -274,6 +306,8 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
   scrim.onclick = () => toggle(false);
   $$('.nav a').forEach(a => a.addEventListener('click', () => toggle(false)));
   $('#logout').onclick = async () => { await signOut(auth); location.replace('index.html'); };
+  bindPrefs();
+  startI18n();
   const api = {
     view: $('#view'),
     setMe(n, s) { $('#meName').textContent = n || ''; $('#meSub').textContent = s || ''; $('#meAv').textContent = (n || '؟').trim().charAt(0); },
