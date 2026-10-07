@@ -2,7 +2,7 @@
 import {
   db, $, $$, esc, money, num, setCurrency, fmtDate, toInput, fromInput, startOfDay, addMonths, daysLeft,
   monthsCeil, tsMs, ago, leftText, DAY, normPhone, waLink, fill, copyText, icon, RIDGE, toast, modal,
-  confirmBox, busy, empty, requireUser, shell, animate, safeImg, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification,
+  confirmBox, busy, empty, skeleton, fmtShort, requireUser, shell, animate, safeImg, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification,
   collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, addDoc, serverTimestamp
 } from './core.js';
 
@@ -27,7 +27,7 @@ const TPL_VARS = {
   reminder: ['name', 'product', 'file', 'expiry_date']
 };
 const TYPE_TXT = { account: 'ملف', code: 'كود', number: 'رقم' };
-const STATE_TXT = { av: 'متاح', sold: 'مباع', soon: 'قريب ينتهي', over: 'انتهى', dead: 'منتهي' };
+const STATE_TXT = { av: 'متاح', sold: 'مباع', soon: 'قرب ينتهي', over: 'انتهى', dead: 'منتهي' };
 const SERVICES = ['Netflix', 'Shahid VIP', 'OSN+', 'Disney+', 'Amazon Prime', 'Spotify', 'YouTube Premium', 'TOD', 'beIN Connect', 'Apple TV+'];
 const CODE_HINTS = ['ببجي 60 UC', 'ببجي 325 UC', 'فري فاير 100 جوهرة', 'فري فاير 530 جوهرة', 'iTunes أمريكي 10$', 'iTunes أمريكي 25$', 'Google Play 10$', 'PlayStation 10$'];
 const COUNTRIES = ['أمريكا', 'بريطانيا', 'كندا', 'ألمانيا', 'فرنسا', 'هولندا', 'السويد', 'إندونيسيا', 'روسيا', 'البرازيل'];
@@ -92,16 +92,15 @@ const NAV = [
   { id: 'files', icon: 'folder', label: 'الملفات' },
   { id: 'sales', icon: 'cart', label: 'المبيعات' },
   { id: 'customers', icon: 'user', label: 'العملاء' },
-  { id: 'reminders', icon: 'bell', label: 'التذكيرات' },
+  { id: 'reminders', icon: 'bell', label: 'تجديدات قربت' },
   { id: 'settings', icon: 'sliders', label: 'الإعدادات' }
 ];
 const UI = shell({
   nav: NAV, name: profile.displayName || profile.email, sub: planLine(),
-  searchPh: 'ابحث عن زبون، منتج، أو رقم…',
-  extra: profile.role === 'admin' ? `<a class="btn ghost sm" style="margin-top:14px" href="admin.html">${icon('crown')} لوحة الأدمن</a>` : ''
+  searchPh: 'ابحث عن زبون، منتج، أو رقم…'
 });
 const view = UI.view;
-view.innerHTML = `<div class="empty" style="padding-top:18vh"><p>جاري تحميل بياناتك…</p></div>`;
+view.innerHTML = `<div class="card" style="margin-bottom:16px">${skeleton(3)}</div><div class="card">${skeleton(5)}</div>`;
 
 let raf = 0;
 const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => render(false)); };
@@ -160,24 +159,33 @@ function render(fresh) {
   else { UI.setActive(r); VIEWS[r](); }
   if (fresh) { animate(view); window.scrollTo(0, 0); } else view.classList.remove('anim');
   const u = urgentCount();
-  UI.setBadge('reminders', u); UI.setBell(u);
+  const urgent = reminders().filter(f => ['soon', 'over'].includes(fileState(f))).slice(0, 5);
+  UI.setBadge('reminders', u);
+  UI.setBell(u, urgent.length ? urgent.map(f => `<button type="button" class="bellitem ${fileState(f)}" data-act="tile" data-id="${f.id}"><b>${esc(f.customerName || '—')}</b><small>${esc(P(f.productId)?.name || '')} · ${t(leftText(f.endDate))}</small></button>`).join('') : `<p class="muted small" style="padding:12px">${t('ما فيش تجديدات قربت 🎉')}</p>`);
 }
 const guardWrite = () => { if (isActive()) return true; toast('اشتراكك غير مفعّل. فعّله من صفحة الاشتراك.', 'bad'); return false; };
 
 /* ================= عناصر مشتركة ================= */
-function tileHTML(f) {
+// صف ملف (الملفات والرئيسية): الصف كامل يفتح التفاصيل
+function fileRow(f) {
   const st = fileState(f);
-  const ic = st === 'av' ? 'folderOpen' : st === 'dead' ? 'ban' : 'lock';
+  const ic = st === 'av' ? 'folderOpen' : st === 'dead' ? 'ban' : 'folder';
   const sub = st === 'av' ? 'جاهز للبيع' : st === 'dead' ? 'الحساب منتهي' : esc(f.customerName || '');
-  return `<button class="tile ${st}" data-act="tile" data-id="${f.id}" ${st === 'dead' ? 'disabled' : ''}>${icon(ic)}<b>الملف #${f.fileNumber}</b><small>${sub}</small><span class="st">${STATE_TXT[st]}</span></button>`;
+  const badge = { av: 'ok', sold: 'off', soon: 'warn', over: 'bad', dead: 'off' }[st];
+  return `<button type="button" class="frow-item ${st}" data-act="tile" data-id="${f.id}" ${st === 'dead' ? 'disabled' : ''}>
+    <span class="fic">${icon(ic)}</span>
+    <span class="fmid"><b>الملف #${f.fileNumber}</b><small>${sub}${st !== 'av' && st !== 'dead' && f.endDate ? ` · ${fmtShort(f.endDate)}` : ''}</small></span>
+    <span class="badge ${badge}">${STATE_TXT[st]}</span><span class="chev">${icon('arrow')}</span></button>`;
 }
-function remHTML(f) {
-  const st = fileState(f), p = P(f.productId);
+// صف تجديد (التذكيرات والرئيسية)
+function remRow(f) {
+  const st = fileState(f), p = P(f.productId), d = daysLeft(f.endDate);
+  const cls = st === 'over' || d < 3 ? 'bad' : d < 7 ? 'warn' : 'ok';
   const acts = st === 'over'
     ? `<button class="btn teal sm" data-act="renew" data-id="${f.id}">جدّد</button><button class="btn red sm" data-act="norenew" data-id="${f.id}">لم يجدد</button>`
-    : st === 'soon' ? `<button class="btn warn sm" data-act="remind" data-id="${f.id}">${icon('bell')} تذكير</button>`
-    : `<button class="btn ghost sm" data-act="tile" data-id="${f.id}">عرض</button>`;
-  return `<div class="rem ${st} rv"><span class="dot"></span><div><b>${esc(f.customerName || '—')}</b><span class="when">${leftText(f.endDate)}</span><small>${esc(p?.name || '')}، الملف #${f.fileNumber}</small></div><div class="acts">${acts}</div></div>`;
+    : `<button class="btn warn sm" data-act="remindWa" data-id="${f.id}">${icon('wa')} إرسال تذكير</button>`;
+  return `<div class="rrow"><div class="rmid"><b>${esc(f.customerName || '—')}</b><small>${esc(p?.name || '')} · الملف #${f.fileNumber}</small></div>
+    <span class="badge ${cls}">${leftText(f.endDate)}</span><div class="racts">${acts}</div></div>`;
 }
 function salesRows(list, actions = true) {
   return list.map(s => `<tr>
@@ -196,81 +204,39 @@ const salesHead = (actions = true) => `<thead><tr><th>العميل</th><th>ال�
 
 /* ================= الرئيسية ================= */
 function vHome() {
-  const now = new Date();
-  const mStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-  const pmStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
   const today = startOfDay(), yday = today - DAY;
-  const sum = (a, b) => S.sales.filter(s => s.date >= a && s.date < b).reduce((t, s) => t + num(s.profit), 0);
-  const cnt = (a, b) => S.sales.filter(s => s.date >= a && s.date < b).length;
-  const pMonth = sum(mStart, Infinity), pPrev = sum(pmStart, mStart);
-  const tToday = cnt(today, Infinity), tY = cnt(yday, today);
+  const inRange = (a, b) => S.sales.filter(s => s.date >= a && s.date < b);
+  const tSales = inRange(today, Infinity), ySales = inRange(yday, today);
+  const tProfit = tSales.reduce((a, s) => a + num(s.profit), 0);
+  const due = reminders().filter(f => fileState(f) === 'over' || daysLeft(f.endDate) <= 7);
   const avail = S.files.filter(f => fileState(f) === 'av').length
     + S.codes.filter(c => c.status === 'available' && P(c.productId)).length
     + S.numbers.filter(n => n.status === 'available').length;
-  const delta = (a, b, lbl) => {
-    if (!b) return `<span class="delta">${a ? 'بداية قوية' : lbl}</span>`;
-    const p = Math.round((a - b) / Math.abs(b) * 100);
-    return `<span class="delta"><b class="${p < 0 ? 'down' : ''}">${p < 0 ? '↓' : '↑'} ${Math.abs(p)}%</b> ${lbl}</span>`;
-  };
-
-  const accs = accProducts().filter(p => !accDead(p));
-  if (!accs.find(p => p.id === S.f.homeProd)) S.f.homeProd = accs[0]?.id || null;
-  const hp = P(S.f.homeProd);
-  const rems = reminders().slice(0, 7);
-  const recent = [...S.sales].sort((a, b) => b.date - a.date).slice(0, 6);
-
-  // أرباح آخر 7 أيام
-  const days = Array.from({ length: 7 }, (_, i) => today - (6 - i) * DAY);
-  const vals = days.map(d => sum(d, d + DAY));
-  const max = Math.max(1, ...vals.map(v => Math.max(0, v)));
-  const week = vals.reduce((a, b) => a + b, 0);
-
+  const recent = [...S.sales].sort((a, b) => b.date - a.date).slice(0, 3);
   const name = (S.profile.displayName || '').split(' ')[0];
   view.innerHTML = `
-  <div class="dash">
-    <aside class="dash-side">
-      <div class="card rv">
-        <div class="chead"><div><h2>التذكيرات</h2><p>تابع عملاءك قبل ما تنتهي اشتراكاتهم</p></div><a class="link" href="#reminders">عرض الكل</a></div>
-        <div class="rems">${rems.length ? rems.map(remHTML).join('') : empty('bell', 'ما فيش اشتراكات نشطة حالياً.')}</div>
-      </div>
-    </aside>
-    <div class="dash-main">
-      ${bannersHTML()}
-      <section class="hero rv">
-        ${RIDGE}
-        <h1>مرحباً، ${esc(name || 'بيك')}</h1>
-        <p class="muted">${isActive() ? `اشتراكك في ملفي ${leftText(tsMs(S.profile.planExpiresAt)).replace('انتهى الاشتراك', 'منتهي')}.` : ''}</p>
-        <div class="row" style="margin-top:18px">
-          <button class="btn amber" data-act="quickSell">${icon('cart')} بيع جديد</button>
-          <button class="btn ghost" data-act="addProduct" data-id="account">${icon('plus')} إضافة منتج</button>
-        </div>
-      </section>
-
-      <div class="stats">
-        <div class="stat a rv"><div class="lbl"><span>أرباح الشهر</span>${icon('chart')}</div><div class="val">${money(pMonth)}</div>${delta(pMonth, pPrev, 'مقارنة بالشهر الماضي')}</div>
-        <div class="stat t rv"><div class="lbl"><span>مبيعات اليوم</span>${icon('cart')}</div><div class="val">${tToday}</div>${delta(tToday, tY, 'مقارنة بالأمس')}</div>
-        <div class="stat b rv"><div class="lbl"><span>المتاح للبيع</span>${icon('box')}</div><div class="val">${avail}</div><span class="delta">ملفات، أكواد، وأرقام</span></div>
-      </div>
-
-      <section class="card glow rv">
-        <div class="chead"><div><h2>الملفات</h2><p>ملفات الحساب وحالة كل واحد</p></div><a class="link" href="#files">عرض الكل</a></div>
-        ${accs.length ? `
-          <div class="chips" style="margin-bottom:16px">${accs.slice(0, 8).map(p => `<button class="chip ${p.id === S.f.homeProd ? 'on' : ''}" data-act="homeProd" data-id="${p.id}">${esc(p.name)}</button>`).join('')}</div>
-          <div class="tiles">${filesOf(hp.id).map(tileHTML).join('')}</div>`
-        : empty('folder', 'أضف أول حساب وقسّمه لملفات.', `<button class="btn amber sm" data-act="addProduct" data-id="account">${icon('plus')} إضافة حساب</button>`)}
-      </section>
-
-      <div class="split">
-        <section class="card rv" style="min-width:0">
-          <div class="chead"><div><h2>سجل المبيعات</h2><p>آخر عمليات البيع</p></div><a class="link" href="#sales">عرض الكل</a></div>
-          ${recent.length ? `<div class="tbl"><table>${salesHead(false)}<tbody>${salesRows(recent, false)}</tbody></table></div>` : empty('cart', 'ما فيش مبيعات للحين.')}
-        </section>
-        <section class="card rv">
-          <h3>صافي الربح</h3><p class="dim small">آخر 7 أيام</p>
-          <div class="display" style="font-size:30px;margin:6px 0 4px">${money(week)}</div>
-          <div class="bars">${vals.map((v, i) => `<div><i style="height:${Math.max(4, v / max * 100)}%;animation-delay:${i * 60}ms" title="${money(v)}"></i><small>${new Date(days[i]).getDate()}</small></div>`).join('')}</div>
-        </section>
-      </div>
+  <div class="home">
+    ${bannersHTML()}
+    <p class="hello rv">مرحباً، ${esc(name || 'بيك')}</p>
+    <section class="today rv" aria-label="اليوم">
+      <div><small>مبيعات اليوم</small><b class="num">${tSales.length.toLocaleString('en-US')}</b></div>
+      <div><small>أرباح اليوم</small><b class="num t-ok">${money(tProfit)}</b></div>
+      <div><small>تجديدات مستحقة</small><b class="num t-amber">${due.length}</b></div>
+    </section>
+    <div class="cta2 rv">
+      <button class="btn amber big" data-act="quickSell">${icon('cart')} بيع جديد</button>
+      <button class="btn outline big" data-act="addProduct" data-id="account">${icon('plus')} إضافة منتج</button>
+    </div>
+    ${due.length ? `<section class="card rv"><div class="chead"><h2>تذكيرات اليوم</h2><a class="link" href="#reminders">عرض الكل</a></div>
+      <div class="rlist">${due.slice(0, 5).map(remRow).join('')}</div></section>` : ''}
+    <section class="card rv"><div class="chead"><h2>آخر العمليات</h2></div>
+      ${recent.length ? `<div class="oplist">${recent.map(s => `<div class="op"><div><b>${esc(s.customerName)}</b><small>${esc(s.productName)}${s.itemLabel ? ' · ' + esc(s.itemLabel) : ''}</small></div><div class="opr"><b class="num">${money(s.price)}</b><small>${ago(s.date)}</small></div></div>`).join('')}</div>
+        <a class="link morelink" href="#sales">عرض الكل</a>`
+      : empty('cart', 'ما فيش مبيعات للحين.', `<button class="btn amber sm" data-act="quickSell">${icon('cart')} بيع جديد</button>`)}
+    </section>
+    <div class="mini2 rv">
+      <a class="mini" href="#files"><small>المتاح للبيع</small><b class="num">${avail}</b></a>
+      <a class="mini" href="#sales"><small>مبيعات الأمس</small><b class="num">${ySales.length}</b></a>
     </div>
   </div>`;
 }
@@ -364,7 +330,7 @@ function vFiles() {
   <div class="pagehead rv"><div><h1>الملفات</h1><p>كل ملفات حساباتك وحالتها</p></div>
     <button class="btn amber" data-act="addProduct" data-id="account">${icon('plus')} إضافة حساب</button></div>
   <div class="toolbar rv">
-    <div class="chips">${[['all', 'الكل'], ['av', 'متاح'], ['sold', 'مباع'], ['soon', 'قريب ينتهي'], ['over', 'انتهى']].map(([k, l]) =>
+    <div class="chips scrollx">${[['all', 'الكل'], ['av', 'متاح'], ['sold', 'مباع'], ['soon', 'قرب ينتهي'], ['over', 'انتهى']].map(([k, l]) =>
       `<button class="chip ${S.f.fst === k ? 'on' : ''}" data-act="fst" data-id="${k}">${l}</button>`).join('')}</div>
     <span class="spacer"></span>
     <select class="inp" id="fprod"><option value="all">كل الحسابات</option>${accs.map(p => `<option value="${p.id}" ${S.f.fprod === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
@@ -377,12 +343,14 @@ function vFiles() {
     return `<section class="card rv section" ${accDead(p) ? 'style="opacity:.75"' : ''}>
       <div class="chead"><div><h2>${esc(p.name)}</h2><p class="ltr" style="text-align:right">${esc(p.email)}</p></div>
         <span class="badge ${accDead(p) ? 'off' : 'ok'}">${accDead(p) ? 'الحساب منتهي' : `ينتهي ${fmtDate(p.accountEnd)}`}</span></div>
-      <div class="tiles">${fs.map(tileHTML).join('')}</div></section>`;
+      <div class="flist">${fs.map(fileRow).join('')}</div></section>`;
   }).join('');
-  $('#flist').innerHTML = groups || `<div class="card">${empty('folder', accs.length ? 'ما فيش ملفات بهذي الحالة.' : 'ما عندكش حسابات للحين.')}</div>`;
+  $('#flist').innerHTML = groups || `<div class="card">${accs.length ? empty('folder', 'ما فيش ملفات بهذي الحالة.') : `<div class="empty">${icon('folder')}<h3>ما فيش ملفات للحين</h3><p>أضف أول حساب باش تبدأ البيع</p><button class="btn amber" data-act="addProduct" data-id="account">${icon('plus')} إضافة حساب</button></div>`}</div>`;
 }
 
 /* ================= المبيعات ================= */
+const MN_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+const monthLabel = m => { const [y, mm] = m.split('-').map(Number); return isEN ? new Date(y, mm - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : `${MN_AR[mm - 1]} ${y}`; };
 function vSales() {
   const months = [...new Set(S.sales.map(s => { const d = new Date(s.date); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }))].sort().reverse();
   view.innerHTML = `
@@ -390,9 +358,10 @@ function vSales() {
     <button class="btn amber" data-act="quickSell">${icon('cart')} بيع جديد</button></div>
   <div class="toolbar rv">
     <input class="inp grow" id="sq" type="search" placeholder="ابحث بالعميل، المنتج، أو الكود…" value="${esc(S.f.sq)}">
-    <select class="inp" id="stype"><option value="all">كل الأنواع</option>${Object.entries(TYPE_TXT).map(([k, l]) => `<option value="${k}" ${S.f.stype === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <select class="inp" id="smonth"><option value="all">كل الأشهر</option>${months.map(m => `<option ${S.f.smonth === m ? 'selected' : ''}>${m}</option>`).join('')}</select>
+
+    <select class="inp" id="smonth"><option value="all">كل الأشهر</option>${months.map(m => `<option value="${m}" ${S.f.smonth === m ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select>
   </div>
+  <div class="chips scrollx rv" style="margin-bottom:16px">${[['all', 'الكل'], ['account', 'ملفات'], ['code', 'أكواد'], ['number', 'أرقام']].map(([k, l]) => `<button class="chip ${S.f.stype === k ? 'on' : ''}" data-st="${k}">${l}</button>`).join('')}</div>
   <div id="slist"></div>`;
   const draw = () => {
     const q = S.f.sq.trim().toLowerCase();
@@ -407,7 +376,7 @@ function vSales() {
       ${list.length ? `<div class="tbl card" style="padding:0"><table>${salesHead()}<tbody>${salesRows(list.slice(0, 300))}</tbody></table></div>` : `<div class="card">${empty('cart', 'ما فيش مبيعات تطابق الفلتر.')}</div>`}`;
   };
   $('#sq').oninput = e => { S.f.sq = e.target.value; draw(); };
-  $('#stype').onchange = e => { S.f.stype = e.target.value; draw(); };
+  $$('[data-st]').forEach(b => b.onclick = () => { S.f.stype = b.dataset.st; $$('[data-st]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   $('#smonth').onchange = e => { S.f.smonth = e.target.value; draw(); };
   draw();
 }
@@ -436,26 +405,39 @@ function vCustomers() {
   draw();
 }
 
-/* ================= التذكيرات ================= */
+/* ================= تجديدات قربت ================= */
+function remTab(f) {
+  if (fileState(f) === 'over') return 'late';
+  const d = daysLeft(f.endDate);
+  return d <= 1 ? 'today' : d <= 7 ? 'week' : null;
+}
 function vReminders() {
   const all = reminders();
-  const grp = { over: [], soon: [], sold: [] };
-  all.forEach(f => grp[fileState(f)]?.push(f));
-  const sec = (k, title, sub) => grp[k].length ? `<section class="card rv section"><div class="chead"><div><h2>${title}</h2><p>${sub}</p></div><span class="badge ${k === 'over' ? 'bad' : k === 'soon' ? 'warn' : 'ok'}">${grp[k].length}</span></div><div class="rems" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">${grp[k].map(remHTML).join('')}</div></section>` : '';
+  const g = { today: [], week: [], late: [] };
+  all.forEach(f => { const k = remTab(f); if (k) g[k].push(f); });
+  if (!S.f.rtab) S.f.rtab = g.late.length && !g.today.length ? 'late' : 'today';
+  const k = S.f.rtab;
   view.innerHTML = `
-  <div class="pagehead rv"><div><h1>التذكيرات</h1><p>اشتراكات الملفات حسب تاريخ الانتهاء</p></div></div>
-  ${all.length ? sec('over', 'انتهت', 'جدّد للزبون، أو سجّل إنه لم يجدد باش يرجع الملف متاح') + sec('soon', 'تنتهي خلال 3 أيام', 'ذكّر الزبون برسالة واتساب جاهزة') + sec('sold', 'نشطة', 'اشتراكات شغالة')
-    : `<div class="card rv">${empty('bell', 'ما فيش ملفات مباعة حالياً.')}</div>`}`;
+  <div class="pagehead rv"><div><h1>تجديدات قربت</h1><p>تابع زباينك قبل ما تنتهي اشتراكاتهم</p></div></div>
+  <div class="tabs rv" style="margin-bottom:16px">${[['today', 'اليوم'], ['week', 'هذا الأسبوع'], ['late', 'متأخر']].map(([x, l]) => `<button class="${x === k ? 'on' : ''}" data-act="rtab" data-id="${x}">${l} <span class="dim">${g[x].length}</span></button>`).join('')}</div>
+  <section class="card rv">${g[k].length ? `<div class="rlist">${g[k].map(remRow).join('')}</div>`
+    : `<div class="empty">${icon('check')}<h3>ما فيش تجديدات قربت 🎉</h3><p>كل زباينك مرتاحين</p></div>`}</section>`;
 }
 
 /* ================= الإعدادات ================= */
+function subProgress() {
+  const end = tsMs(S.profile.planExpiresAt), months = S.profile.plan?.months || 1;
+  const start = addMonths(end, -months), pct = Math.min(100, Math.max(0, (Date.now() - start) / Math.max(1, end - start) * 100));
+  return `<div class="meter" style="margin:4px 0 16px" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"><i class="s" style="width:${pct}%"></i></div>`;
+}
+const TPL_SAMPLE = { name: 'أحمد', product: 'Netflix', email: 'demo@email.com', password: '••••••', file: '#1', expiry_date: '', code: 'XXXX-XXXX', number: '+1 555 000 0000', country: 'أمريكا' };
 function vSettings() {
-  const pr = S.profile;
+  const pr = S.profile, end = tsMs(pr.planExpiresAt);
   view.innerHTML = `
-  <div class="pagehead rv"><div><h1>الإعدادات</h1><p>بياناتك، قوالب الرسائل، والاشتراك</p></div></div>
-  <div style="display:grid;gap:22px;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));align-items:start">
+  <div class="pagehead rv"><div><h1>الإعدادات</h1></div></div>
+  <div class="setstack">
     <section class="card rv">
-      <h2 style="margin-bottom:16px">بياناتك</h2>
+      <div class="shead"><h2>بياناتك</h2><p>اسمك ورقمك والعملة اللي تبيع بيها</p></div>
       <div class="field"><label>الاسم أو اسم المتجر</label><input id="stName" maxlength="80" value="${esc(pr.displayName || '')}"></div>
       <div class="grid2"><div class="field"><label>رقم الواتساب</label><input id="stPhone" dir="ltr" maxlength="30" value="${esc(pr.phone || '')}"></div>
         <div class="field"><label>العملة</label><select id="stCur">${[['$', 'دولار ($)'], ['د.ل', 'دينار ليبي (د.ل)'], ['ر.س', 'ريال سعودي (ر.س)']].map(([v, l]) => `<option value="${v}" ${pr.currency === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
@@ -463,24 +445,24 @@ function vSettings() {
       <button class="btn amber" id="stSave">حفظ البيانات</button>
     </section>
     <section class="card rv">
-      <h2 style="margin-bottom:6px">الاشتراك</h2>
-      <p class="muted" style="margin-bottom:16px">${isActive() ? `${S.profile.plan?.name ? esc(S.profile.plan.name) + '، ' : ''}مفعّل حتى ${fmtDate(tsMs(pr.planExpiresAt))} (${leftText(tsMs(pr.planExpiresAt))})` : 'اشتراكك غير مفعّل حالياً.'}</p>
-      <button class="btn ${isActive() ? 'ghost' : 'amber'}" data-act="subscribe">${icon('card')} ${isActive() ? 'تجديد الاشتراك' : 'تفعيل الاشتراك'}</button>
+      <div class="shead"><h2>الاشتراك</h2><p>${pr.plan?.name ? `<span data-raw>${esc(pr.plan.name)}</span>` : ''}</p></div>
+      <p style="margin-bottom:8px">${t('اشتراكك فعّال، ينتهي في')} <b>${fmtDate(end)}</b> <span class="muted">(${t(leftText(end))})</span></p>
+      ${subProgress()}
+      <button class="btn amber" data-act="subscribe">${icon('card')} تجديد الاشتراك</button>
       ${reqList()}
     </section>
-    <section class="card rv" style="grid-column:1/-1">
-      <h2>قوالب الرسائل</h2><p class="muted small" style="margin-bottom:16px">اضغط على المتغير باش ينضاف مكان المؤشر. النظام يبدّله ببيانات الزبون وقت التسليم.</p>
-      <div style="display:grid;gap:4px 18px;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))">
-        ${[['account', 'تسليم ملف حساب'], ['code', 'تسليم كود'], ['number', 'تسليم رقم'], ['reminder', 'تذكير بالتجديد']].map(([k, l]) => `
-          <div class="field"><label>${l}</label><textarea id="tpl_${k}" rows="7">${esc(S.tpl[k])}</textarea>
-            <div class="chips">${TPL_VARS[k].map(v => `<button class="chip var" type="button" data-act="insVar" data-id="tpl_${k}" data-v="{${v}}">{${v}}</button>`).join('')}</div></div>`).join('')}
-      </div>
-      <div class="row"><button class="btn amber" id="tplSave" ${isActive() ? '' : 'disabled'}>حفظ القوالب</button><button class="btn ghost" id="tplReset">استرجاع القوالب الافتراضية</button></div>
+    <section class="card rv">
+      <div class="shead"><h2>قوالب الرسائل</h2><p>اضغط على أي متغير لإضافته في مكان المؤشر.</p></div>
+      ${[['account', 'تسليم ملف حساب'], ['code', 'تسليم كود'], ['number', 'تسليم رقم'], ['reminder', 'تذكير بالتجديد']].map(([k, l]) => `
+        <div class="field tplf"><div class="row"><label for="tpl_${k}">${l}</label><span class="spacer"></span><button class="btn ghost sm" type="button" data-act="tplTest" data-id="${k}">${icon('wa')} إرسال تجريبي</button></div>
+          <textarea id="tpl_${k}" class="tpl">${esc(S.tpl[k])}</textarea>
+          <div class="chips">${TPL_VARS[k].map(v => `<button class="chip var" type="button" data-act="insVar" data-id="tpl_${k}" data-v="{${v}}">{${v}}</button>`).join('')}</div></div>`).join('')}
+      <div class="row"><button class="btn amber" id="tplSave">حفظ القوالب</button><button class="btn ghost" id="tplReset">استرجاع القوالب الافتراضية</button></div>
     </section>
   </div>`;
   $('#stSave').onclick = e => busy(e.currentTarget, async () => {
     const name = $('#stName').value.trim();
-    if (!name) throw new Error('اكتب الاسم.');
+    if (!name) throw new Error(t('اكتب الاسم.'));
     await updateDoc(doc(db, 'users', uid()), { displayName: name, phone: $('#stPhone').value.trim(), currency: $('#stCur').value });
     toast('تم حفظ البيانات');
   });
@@ -504,7 +486,7 @@ function bannersHTML() {
   return `<section class="banners rv" aria-label="عروض"><div class="slides">${S.banners.map((b, k) => {
     const href = bannerHref(b.linkType, b.linkValue);
     const img = `<img src="${safeImg(b.image)}" alt="${esc(b.title || '')}" loading="lazy">`;
-    return href ? `<a class="slide ${k === i ? 'on' : ''}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${img}</a>` : `<div class="slide ${k === i ? 'on' : ''}">${img}</div>`;
+    return href ? `<a class="slide ${k === i ? 'on' : ''}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${img}<span class="visit">${t('زيارة')} ${icon('arrow')}</span></a>` : `<div class="slide ${k === i ? 'on' : ''}">${img}</div>`;
   }).join('')}</div>${S.banners.length > 1 ? `<div class="dots">${S.banners.map((_, k) => `<button type="button" class="${k === i ? 'on' : ''}" data-act="bannerGo" data-id="${k}" aria-label="${k + 1}"></button>`).join('')}</div>` : ''}</section>`;
 }
 function showBanner(k) {
@@ -663,17 +645,20 @@ function resolveCust(root, b) {
 }
 const accMsg = (p, fileNumber, name, end) => fill(S.tpl.account, { name, product: p.name, email: p.email, password: p.password, file: '#' + fileNumber, expiry_date: fmtDate(end) });
 
-function deliver(msg, phone, title = 'تسليم للزبون') {
+function deliver(msg, phone, title = 'تسليم للزبون', done = '') {
   const m = modal(title, `
-    <div class="field"><label>الرسالة</label><textarea id="dMsg" rows="9">${esc(msg)}</textarea></div>
+    ${done ? `<p class="okline">${icon('check')} ${t('تم البيع بنجاح')}</p>` : ''}
+    <div class="field"><label>الرسالة</label><textarea id="dMsg" rows="8">${esc(msg)}</textarea></div>
     <div class="field"><label>واتساب الزبون</label><input id="dPhone" type="tel" dir="ltr" value="${esc(phone || '')}" placeholder="09XXXXXXXX"></div>
-    <div class="mfoot"><button class="btn wa" id="dWa">${icon('wa')} إرسال على واتساب</button><button class="btn ghost" id="dCopy">${icon('copy')} نسخ الرسالة</button></div>`);
+    <button class="btn wa big full" id="dWa">${icon('wa')} إرسال على واتساب</button>
+    <div class="mfoot" style="margin-top:10px"><button class="btn ghost" id="dCopy">${icon('copy')} نسخ الرسالة</button><button class="btn text" id="dDone" data-x>تم</button></div>`);
   $('#dWa', m.el).onclick = () => {
     const ph = $('#dPhone', m.el).value;
-    if (!normPhone(ph)) { toast('اكتب رقم واتساب الزبون', 'bad'); return; }
+    if (!normPhone(ph)) { toast(t('اكتب رقم واتساب الزبون'), 'bad'); return; }
     window.open(waLink(ph, $('#dMsg', m.el).value), '_blank');
   };
   $('#dCopy', m.el).onclick = () => copyText($('#dMsg', m.el).value);
+  if (done) $('#dDone', m.el).addEventListener('click', () => toast(done));
 }
 
 function sellAccount({ file, product }) {
@@ -714,8 +699,8 @@ function sellAccount({ file, product }) {
     b.set(sref, { type: 'account', productId: p.id, productName: p.name, itemId: f.id, itemLabel: `الملف #${f.fileNumber}`, customerId: c.id, customerName: c.name, customerPhone: c.phone, price: pr, cost, profit: round2(pr - cost), months: mm, startDate: start, endDate: end, date: Date.now(), status: 'active' });
     b.update(mdoc('files', f.id), { status: 'sold', customerId: c.id, customerName: c.name, customerPhone: c.phone, saleId: sref.id, startDate: start, endDate: end });
     await b.commit();
-    m.close(); toast('تم البيع');
-    deliver(accMsg(p, f.fileNumber, c.name, end), c.phone, 'تسليم الملف');
+    m.close();
+    deliver(accMsg(p, f.fileNumber, c.name, end), c.phone, 'تسليم الملف', `${t('تم بيع')} ${t('الملف #' + f.fileNumber)}`);
   });
 }
 
@@ -738,8 +723,8 @@ function sellCode({ product }) {
     b.set(sref, { type: 'code', productId: p.id, productName: p.name, itemId: code.id, itemLabel: code.code, customerId: c.id, customerName: c.name, customerPhone: c.phone, price: pr, cost, profit: round2(pr - cost), date: Date.now(), status: 'done' });
     b.update(mdoc('codes', code.id), { status: 'sold', saleId: sref.id, soldAt: Date.now(), customerName: c.name });
     await b.commit();
-    m.close(); toast('تم البيع');
-    deliver(fill(S.tpl.code, { name: c.name, product: p.name, code: code.code }), c.phone, 'تسليم الكود');
+    m.close();
+    deliver(fill(S.tpl.code, { name: c.name, product: p.name, code: code.code }), c.phone, 'تسليم الكود', t('تم البيع'));
   });
 }
 
@@ -759,8 +744,8 @@ function sellNumber(n) {
     b.set(sref, { type: 'number', productId: null, productName: `رقم ${n.country}`, itemId: n.id, itemLabel: n.number, country: n.country, customerId: c.id, customerName: c.name, customerPhone: c.phone, price: pr, cost, profit: round2(pr - cost), date: Date.now(), status: 'done' });
     b.update(mdoc('numbers', n.id), { status: 'sold', saleId: sref.id, soldAt: Date.now(), customerName: c.name, customerPhone: c.phone });
     await b.commit();
-    m.close(); toast('تم البيع');
-    deliver(fill(S.tpl.number, { name: c.name, country: n.country, number: n.number }), c.phone, 'تسليم الرقم');
+    m.close();
+    deliver(fill(S.tpl.number, { name: c.name, country: n.country, number: n.number }), c.phone, 'تسليم الرقم', t('تم البيع'));
   });
 }
 
@@ -823,6 +808,12 @@ async function notRenewed(f) {
     if (f.saleId && S.sales.find(s => s.id === f.saleId)) b.update(mdoc('sales', f.saleId), { status: 'not_renewed' });
     await b.commit(); toast('الملف رجع متاح');
   } catch (e) { toast(e.message, 'bad'); }
+}
+const remindMsg = f => fill(S.tpl.reminder, { name: f.customerName, product: P(f.productId)?.name || '', file: '#' + f.fileNumber, expiry_date: fmtDate(f.endDate) });
+// تذكير مباشر: يفتح واتساب لو الرقم موجود
+function remindWa(f) {
+  if (normPhone(f.customerPhone)) window.open(waLink(f.customerPhone, remindMsg(f)), '_blank');
+  else remind(f);
 }
 function remind(f) {
   const p = P(f.productId);
@@ -1006,7 +997,7 @@ function custDetails(c) {
   modal(esc(c.name), `
     <div class="kv" style="margin-bottom:16px"><div><small>المشتريات</small><b>${st.count}</b></div><div><small>الإجمالي</small><b>${money(st.total)}</b></div><div><small>آخر شراء</small><b>${st.last ? fmtDate(st.last) : '—'}</b></div></div>
     ${c.notes ? `<p class="muted" style="margin-bottom:14px">${esc(c.notes)}</p>` : ''}
-    ${active.length ? `<h3 style="margin-bottom:10px">اشتراكات حالية</h3><div class="rems" style="margin-bottom:16px">${active.map(remHTML).join('')}</div>` : ''}
+    ${active.length ? `<h3 style="margin-bottom:10px">اشتراكات حالية</h3><div class="rlist" style="margin-bottom:16px">${active.map(remRow).join('')}</div>` : ''}
     ${st.list.length ? `<h3 style="margin-bottom:10px">سجل المشتريات</h3><div class="tbl"><table>${salesHead()}<tbody>${salesRows(st.list)}</tbody></table></div>` : ''}
     <div class="mfoot" style="margin-top:16px">${c.phone ? `<a class="btn wa" href="${waLink(c.phone, '')}" target="_blank" rel="noopener">${icon('wa')} محادثة واتساب</a>` : ''}<button class="btn ghost" data-act="custForm" data-id="${c.id}">${icon('edit')} تعديل</button></div>`, { wide: true });
 }
@@ -1028,6 +1019,13 @@ const ACTS = {
   renew: id => { const f = F(id); f && renew(f); },
   norenew: id => { const f = F(id); f && notRenewed(f); },
   remind: id => { const f = F(id); f && remind(f); },
+  remindWa: id => { const f = F(id); f && remindWa(f); },
+  rtab: id => { S.f.rtab = id; vReminders(); },
+  tplTest: id => {
+    const own = S.profile.phone; const txt = fill($('#tpl_' + id)?.value || S.tpl[id], { ...TPL_SAMPLE, name: t(TPL_SAMPLE.name), country: t(TPL_SAMPLE.country), expiry_date: fmtDate(addMonths(Date.now(), 1)) });
+    if (!normPhone(own)) { toast(t('أضف رقم واتسابك في "بياناتك" أولاً.'), 'bad'); return; }
+    window.open(waLink(own, txt), '_blank');
+  },
   resendFile: id => { const f = F(id); const s = f && S.sales.find(x => x.id === f.saleId); s ? resend(s) : f && deliver(accMsg(P(f.productId), f.fileNumber, f.customerName, f.endDate), f.customerPhone); },
   sellProd: id => { const p = P(id); if (!p) return; p.type === 'account' ? sellAccount({ product: p }) : sellCode({ product: p }); },
   sellNum: id => sellNumber(S.numbers.find(n => n.id === id)),
@@ -1043,7 +1041,6 @@ const ACTS = {
   ptab: id => { S.f.ptab = id; vProducts(); animate(view); },
   fst: id => { S.f.fst = id; vFiles(); },
   filesOf: id => { S.f.fprod = id; S.f.fst = 'all'; location.hash = '#files'; },
-  homeProd: id => { S.f.homeProd = id; render(false); },
   copy: (id, b) => copyText(b.dataset.v),
   reveal: (id, b) => { const sp = b.parentElement.querySelector('[data-pw]'); const on = sp.textContent === sp.dataset.pw; sp.textContent = on ? '••••••••' : sp.dataset.pw; },
   cust: id => { const c = S.customers.find(x => x.id === id); c && custDetails(c); },

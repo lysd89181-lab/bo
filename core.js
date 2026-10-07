@@ -25,14 +25,15 @@ export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;'
 
 /* ---------- العملة والأرقام ---------- */
 // عملات اشتراك المنصة
-export const CURS = { LYD: { ar: 'د.ل', en: 'LYD', name: 'دينار ليبي' }, SAR: { ar: 'ر.س', en: 'SAR', name: 'ريال سعودي' } };
+export const CURS = { LYD: { ar: 'د.ل', en: 'LYD', name: 'دينار ليبي' }, SAR: { ar: 'ر.س', en: 'SAR', name: 'ريال سعودي' }, USDT: { ar: 'USDT', en: 'USDT', name: 'USDT' } };
 const SYM_EN = { 'د.ل': 'LYD', 'ر.س': 'SAR' };
 const fmtNum = n => (Math.round((+n || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
-const withSym = (s, sym) => { sym = esc(sym || '$'); if (sym === '$') return s + '$'; return s + ' ' + (isEN ? (SYM_EN[sym] || sym) : sym); };
+// الرقم أولاً ثم مسافة ثم الرمز: «15 $» و«1,250 د.ل»
+const withSym = (s, sym) => { sym = esc(sym || '$'); return '\u2066' + s + '\u00A0' + (isEN ? (SYM_EN[sym] || sym) : sym) + '\u2069'; };
 let CUR = '$';
 export const setCurrency = c => { CUR = ['$', 'د.ل', 'ر.س'].includes(c) ? c : '$'; };
 export const money = n => withSym(fmtNum(n), CUR);
-// مبلغ بعملة محددة (LYD / SAR) — للاشتراكات
+// مبلغ بعملة محددة (LYD / SAR / USDT) — للاشتراكات
 export const moneyIn = (n, code) => withSym(fmtNum(n), CURS[code]?.ar || '$');
 // أسعار الخطة: تدعم الشكل القديم (price) والجديد (prices)
 export const planPrices = p => { const o = {}; const pr = p?.prices || {}; Object.keys(CURS).forEach(c => { if (pr[c] != null && pr[c] !== '') o[c] = +pr[c]; }); if (!Object.keys(o).length && p?.price != null) o.LYD = +p.price; return o; };
@@ -41,7 +42,12 @@ export const num = v => { const n = parseFloat(String(v ?? '').replace(',', '.')
 /* ---------- التواريخ (نخزنها milliseconds) ---------- */
 export const DAY = 864e5;
 const p2 = n => String(n).padStart(2, '0');
-export const fmtDate = ms => { if (!ms) return '—'; const d = new Date(ms); return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())}`; };
+const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// «05 نوفمبر 2026» / «Nov 05, 2026»
+export const fmtDate = ms => { if (!ms) return '—'; const d = new Date(ms); return isEN ? `${MONTHS_EN[d.getMonth()]} ${p2(d.getDate())}, ${d.getFullYear()}` : `${p2(d.getDate())} ${MONTHS_AR[d.getMonth()]} ${d.getFullYear()}`; };
+export const fmtShort = ms => { const d = new Date(ms); return isEN ? `${MONTHS_EN[d.getMonth()]} ${d.getDate()}` : `${d.getDate()} ${MONTHS_AR[d.getMonth()]}`; };
+export const formatDate = fmtDate;
 export const toInput = ms => { const d = new Date(ms || Date.now()); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
 export const fromInput = v => { if (!v) return 0; const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
 export const startOfDay = (ms = Date.now()) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -51,6 +57,7 @@ export const daysLeft = ms => Math.ceil((ms - Date.now()) / DAY);
 export const monthsCeil = (a, b) => { if (b <= a) return 0; let m = 0; while (addMonths(a, m) < b && m < 240) m++; return m; };
 export const tsMs = t => !t ? 0 : typeof t === 'number' ? t : t.toMillis ? t.toMillis() : 0;
 export const ago = ms => {
+  if (Date.now() - ms > 7 * 864e5) return fmtDate(ms);
   const s = Math.max(0, (Date.now() - ms) / 1000);
   if (s < 60) return 'الآن';
   if (s < 3600) return `منذ ${Math.floor(s / 60)} دقيقة`;
@@ -63,8 +70,8 @@ export const leftText = ms => {
   const d = daysLeft(ms);
   if (ms < Date.now()) return 'انتهى الاشتراك';
   if (d <= 1) return 'ينتهي اليوم';
-  if (d === 2) return 'متبقي يومين';
-  return d <= 10 ? `متبقي ${d} أيام` : `متبقي ${d} يوم`;
+  if (d === 2) return 'ينتهي بعد يومين';
+  return d <= 10 ? `ينتهي بعد ${d} أيام` : `ينتهي بعد ${d} يوم`;
 };
 
 /* ---------- واتساب والقوالب ---------- */
@@ -140,10 +147,11 @@ export const RIDGE = `<svg class="ridge" viewBox="0 0 800 120" preserveAspectRat
 
 /* ---------- التنبيهات والنوافذ ---------- */
 export function toast(msg, type = 'ok') {
+  if (type === 'ok' && /^(تعذر|ما |اكتب|اختار)/.test(msg)) type = 'warn';
   let box = $('#toasts');
   if (!box) { box = document.createElement('div'); box.id = 'toasts'; box.setAttribute('role', 'status'); document.body.append(box); }
   const t = document.createElement('div'); t.className = 'toast ' + type; t.textContent = msg; box.append(t);
-  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 400); }, 2800);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 400); }, 3000);
 }
 export function modal(title, body, { wide = false } = {}) {
   const back = document.createElement('div');
@@ -191,6 +199,7 @@ export function errText(e) {
   };
   return map[c] || e?.message || 'صار خطأ غير متوقع.';
 }
+export const skeleton = (n = 4) => `<div class="skel" aria-hidden="true">${'<i></i>'.repeat(n)}</div>`;
 export const empty = (ic, text, btn = '') => `<div class="empty">${icon(ic)}<p>${text}</p>${btn}</div>`;
 
 /* ---------- حارس الدخول ---------- */
@@ -293,8 +302,11 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
     <main class="main">
       <header class="top">
         <button class="iconbtn menu" id="menuBtn" aria-label="القائمة">${icon('menu')}</button>
-        <div class="search">${icon('search')}<input id="q" type="search" placeholder="${searchPh}" autocomplete="off" aria-label="بحث"><div class="sres" id="sres" hidden></div></div>
-        <a class="iconbtn bell" href="${bellHref}" aria-label="التنبيهات">${icon('bell')}<i class="dotc" id="bellc" hidden></i></a>
+        <a class="topbrand" href="#home">${LOGO()}<b>ملفي</b></a>
+        <div class="search" id="searchBox">${icon('search')}<input id="q" type="search" placeholder="${searchPh}" autocomplete="off" aria-label="بحث"><div class="sres" id="sres" hidden></div></div>
+        <button class="iconbtn searchbtn" id="searchBtn" type="button" aria-label="بحث">${icon('search')}</button>
+        <div class="bellwrap"><button class="iconbtn bell" id="bellBtn" type="button" aria-label="التنبيهات" aria-expanded="false">${icon('bell')}<i class="dotc" id="bellc" hidden></i></button>
+          <div class="belldd" id="bellDD" hidden><div class="belllist" id="bellList"></div><a class="link belldd-all" href="${bellHref}">عرض الكل</a></div></div>
         ${prefsHTML()}
       </header>
       <section id="view"></section>
@@ -306,6 +318,18 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
   scrim.onclick = () => toggle(false);
   $$('.nav a').forEach(a => a.addEventListener('click', () => toggle(false)));
   $('#logout').onclick = async () => { await signOut(auth); location.replace('index.html'); };
+  // البحث: أيقونة تفتح الخانة
+  const top = $('.top');
+  const openSearch = on => { top.classList.toggle('searching', on); if (on) setTimeout(() => $('#q').focus(), 30); };
+  $('#searchBtn').onclick = () => openSearch(!top.classList.contains('searching'));
+  $('#q').addEventListener('keydown', e => { if (e.key === 'Escape') openSearch(false); });
+  $('#q').addEventListener('blur', () => setTimeout(() => { if (!$('#q').value) openSearch(false); }, 200));
+  // قائمة الجرس
+  const dd = $('#bellDD'), bb = $('#bellBtn');
+  const showDD = on => { dd.hidden = !on; bb.setAttribute('aria-expanded', on); };
+  bb.onclick = e => { e.stopPropagation(); showDD(dd.hidden); };
+  document.addEventListener('click', e => { if (!e.target.closest('.bellwrap')) showDD(false); });
+  dd.addEventListener('click', e => { if (e.target.closest('a,button')) showDD(false); });
   bindPrefs();
   startI18n();
   const api = {
@@ -313,7 +337,7 @@ export function shell({ nav, name, sub, searchPh, bellHref = '#reminders', extra
     setMe(n, s) { $('#meName').textContent = n || ''; $('#meSub').textContent = s || ''; $('#meAv').textContent = (n || '؟').trim().charAt(0); },
     setActive(id) { $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === id)); },
     setBadge(id, n) { const b = $(`[data-badge="${id}"]`); if (b) { b.hidden = !n; b.textContent = n; } },
-    setBell(n) { const b = $('#bellc'); b.hidden = !n; b.textContent = n; }
+    setBell(n, html) { const b = $('#bellc'); b.hidden = !n; b.textContent = n; if (html != null) $('#bellList').innerHTML = html; }
   };
   api.setMe(name, sub);
   return api;

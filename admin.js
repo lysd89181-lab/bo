@@ -1,19 +1,19 @@
 // ملفي — لوحة الأدمن
 import {
   db, $, $$, esc, money, num, fmtDate, toInput, fromInput, addMonths, daysLeft, tsMs, ago, leftText, DAY,
-  waLink, icon, RIDGE, toast, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref,
+  waLink, icon, RIDGE, toast, skeleton, startOfDay, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref,
   collection, doc, onSnapshot, writeBatch, setDoc, updateDoc, deleteDoc, getDocs, Timestamp, serverTimestamp
 } from './core.js';
 
-const S = { users: [], requests: [], plans: [], platform: {}, methods: [], banners: [], loaded: new Set(), started: false, f: { mq: '', mst: 'all', rst: 'pending' } };
+const S = { range: 'month', rFrom: '', rTo: '', users: [], requests: [], plans: [], platform: {}, methods: [], banners: [], loaded: new Set(), started: false, f: { mq: '', mst: 'all', rst: 'pending' } };
 const NEED = 6;
 // مبلغ الطلب بعملته (الطلبات القديمة بدون عملة)
 const rMoney = r => r.currency ? moneyIn(r.price, r.currency) : money(r.price);
 // مجموع حسب العملة: «120 د.ل + 300 ر.س»
 const sumByCur = list => { const o = {}; list.forEach(r => { const c = r.currency || 'LYD'; o[c] = (o[c] || 0) + num(r.price); }); const parts = Object.keys(CURS).filter(c => o[c]).map(c => moneyIn(o[c], c)); return parts.length ? parts.join(' + ') : moneyIn(0, 'LYD'); };
 const exp = u => tsMs(u.planExpiresAt);
-const mState = u => u.role === 'admin' ? 'admin' : u.status === 'deleted' ? 'deleted' : !u.isActive ? 'off' : exp(u) > Date.now() ? 'on' : 'expired';
-const ST = { on: ['ok', 'نشط'], off: ['off', 'موقوف'], expired: ['bad', 'منتهي'], admin: ['info', 'أدمن'], deleted: ['off', 'محذوف'] };
+const mState = u => u.role === 'admin' ? 'admin' : u.status === 'deleted' ? 'deleted' : !u.isActive ? 'off' : exp(u) <= Date.now() ? 'expired' : daysLeft(exp(u)) <= 5 ? 'soon' : 'on';
+const ST = { on: ['ok', 'نشط'], soon: ['warn', 'قرب ينتهي'], off: ['off', 'موقوف'], expired: ['bad', 'منتهي'], admin: ['info', 'أدمن'], deleted: ['off', 'محذوف'] };
 const merchants = () => S.users.filter(u => u.role !== 'admin' && u.status !== 'deleted');
 const allMerchants = () => S.users.filter(u => u.role !== 'admin');
 const pendingReqs = () => S.requests.filter(r => r.status === 'pending');
@@ -32,7 +32,7 @@ const NAV = [
 const UI = shell({ nav: NAV, name: profile.displayName || profile.email, sub: 'مدير المنصة', searchPh: 'ابحث عن تاجر بالاسم أو الإيميل…', bellHref: '#requests',
   extra: `<a class="btn ghost sm" style="margin-top:14px" href="app.html">${icon('box')} لوحة التاجر</a>` });
 const view = UI.view;
-view.innerHTML = `<div class="empty" style="padding-top:18vh"><p>جاري التحميل…</p></div>`;
+view.innerHTML = `<div class="card" style="margin-bottom:16px">${skeleton(3)}</div><div class="card">${skeleton(5)}</div>`;
 
 let raf = 0;
 const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => render(false)); };
@@ -51,20 +51,25 @@ const VIEWS = { home: vHome, merchants: vMerchants, requests: vRequests, plans: 
 function render(fresh) {
   let r = (location.hash || '#home').slice(1);
   if (!VIEWS[r]) r = 'home';
-  UI.setActive(r); VIEWS[r]();
+  UI.setActive(r); VIEWS[r](); if (r === 'home') bindRange();
   if (fresh) { animate(view); window.scrollTo(0, 0); } else view.classList.remove('anim');
-  const p = pendingReqs().length; UI.setBadge('requests', p); UI.setBell(p);
+  const p = pendingReqs().length; UI.setBadge('requests', p);
+  UI.setBell(p, p ? pendingReqs().slice(0, 5).map(r => `<a class="bellitem soon" href="#requests"><b data-raw>${esc(r.merchantName || r.merchantEmail)}</b><small>${esc(r.planName)} · ${rMoney(r)}</small></a>`).join('') : `<p class="muted small" style="padding:12px">${t('ما فيش طلبات جديدة.')}</p>`);
 }
 
 /* ================= نظرة عامة ================= */
 function vHome() {
-  const ms = merchants(), active = ms.filter(u => mState(u) === 'on');
+  const ms = merchants(), active = ms.filter(u => ['on', 'soon'].includes(mState(u)));
   const approved = S.requests.filter(r => r.status === 'approved');
   const revenue = sumByCur(approved);
   const now = new Date();
   const monthStart = i => new Date(now.getFullYear(), now.getMonth() - i, 1).getTime();
-  const thisM = sumByCur(approved.filter(r => tsMs(r.reviewedAt || r.createdAt) >= monthStart(0)));
-  const newThisM = ms.filter(u => tsMs(u.createdAt) >= monthStart(0)).length;
+  // فلتر الفترة
+  const [ra, rb] = rangeBounds();
+  const inR = x => x >= ra && x < rb;
+  const thisM = sumByCur(approved.filter(r => inR(tsMs(r.reviewedAt || r.createdAt))));
+  const newThisM = ms.filter(u => inR(tsMs(u.createdAt))).length;
+  const expiredN = ms.filter(u => mState(u) === 'expired').length;
   const soon = active.filter(u => daysLeft(exp(u)) <= 5).sort((a, b) => exp(a) - exp(b));
 
   // آخر 6 أشهر
@@ -91,13 +96,18 @@ function vHome() {
       </div>
     </aside>
     <div class="dash-main">
-      <section class="hero rv">${RIDGE}<h1>لوحة إدارة ملفي</h1><p class="muted">${newThisM} تاجر جديد هذا الشهر، ${pendingReqs().length ? `و${pendingReqs().length} طلب ينتظر التفعيل` : 'وما فيش طلبات تنتظر التفعيل'}.</p></section>
-      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
-        <div class="stat a rv"><div class="lbl"><span>إيرادات المنصة</span>${icon('coins')}</div><div class="val" style="font-size:24px">${revenue}</div><span class="delta"><b>${thisM}</b> هذا الشهر</span></div>
-        <div class="stat t rv"><div class="lbl"><span>التجار النشطين</span>${icon('pulse')}</div><div class="val">${active.length}</div><span class="delta">من أصل ${ms.length} تاجر</span></div>
-        <div class="stat b rv"><div class="lbl"><span>إجمالي التجار</span>${icon('users')}</div><div class="val">${ms.length}</div><span class="delta"><b>+${newThisM}</b> هذا الشهر</span></div>
+      <div class="pagehead rv" style="margin-bottom:0"><div><h1>لوحة إدارة ملفي</h1></div></div>
+      <div class="row rv">
+        <div class="chips scrollx">${[['today', 'اليوم'], ['week', 'هذا الأسبوع'], ['month', 'هذا الشهر'], ['custom', 'مخصص']].map(([k, l]) => `<button class="chip ${S.range === k ? 'on' : ''}" data-act="range" data-id="${k}">${l}</button>`).join('')}</div>
+        ${S.range === 'custom' ? `<div class="row"><input class="inp" style="width:auto" type="date" id="rFrom" value="${S.rFrom}" aria-label="من"><input class="inp" style="width:auto" type="date" id="rTo" value="${S.rTo}" aria-label="إلى"></div>` : ''}
       </div>
-      <section class="card glow rv">
+      <div class="kpis rv">
+        <div class="kpi"><small>إيرادات الفترة</small><b>${thisM}</b><span class="dim small">${t('الإجمالي')}: ${revenue}</span></div>
+        <div class="kpi"><small>تجار جدد</small><b class="num">${newThisM}</b></div>
+        <div class="kpi"><small>التجار النشطين</small><b class="num t-ok">${active.length}</b><span class="dim small">${t('من أصل')} ${ms.length}</span></div>
+        <div class="kpi"><small>اشتراكات منتهية</small><b class="num t-bad">${expiredN}</b></div>
+      </div>
+      <section class="card rv">
         <div class="chead"><div><h2>نمو المنصة</h2><p>التفعيلات وتسجيلات التجار، آخر 6 أشهر</p></div>
           <div class="row small"><span style="color:var(--amber-t)">━ تفعيلات</span><span class="t-ok">● تسجيلات</span></div></div>
         ${lineChart(months.map(m => m.label), rev, reg)}
@@ -108,6 +118,13 @@ function vHome() {
       </section>
     </div>
   </div>`;
+}
+function rangeBounds() {
+  const today = startOfDay();
+  if (S.range === 'today') return [today, Infinity];
+  if (S.range === 'week') return [today - 6 * DAY, Infinity];
+  if (S.range === 'custom') return [fromInput(S.rFrom) || 0, S.rTo ? fromInput(S.rTo) + DAY : Infinity];
+  const d = new Date(); return [new Date(d.getFullYear(), d.getMonth(), 1).getTime(), Infinity];
 }
 function lineChart(labels, rev, reg) {
   const W = 640, H = 230, pl = 14, pr = 14, pt = 20, pb = 34;
@@ -136,6 +153,9 @@ function reqCard(r) {
     <div class="acts"><button class="btn teal sm" data-act="approve" data-id="${r.id}">${icon('check')} تفعيل</button><button class="btn red sm" data-act="reject" data-id="${r.id}">رفض</button></div></div>`;
 }
 
+function bindRange() {
+  ['rFrom', 'rTo'].forEach(k => { const el = $('#' + k); if (el) el.onchange = () => { S[k] = el.value; vHome(); bindRange(); }; });
+}
 /* ================= التجار ================= */
 function vMerchants() {
   view.innerHTML = `
@@ -147,7 +167,7 @@ function vMerchants() {
   <div class="card rv" style="padding:0;overflow:hidden" id="mlist"></div>`;
   const draw = () => {
     const q = S.f.mq.trim().toLowerCase();
-    const list = (S.f.mst === 'deleted' ? allMerchants() : merchants()).filter(u => (S.f.mst === 'all' || mState(u) === S.f.mst) && (!q || [u.displayName, u.email, u.phone].some(v => String(v || '').toLowerCase().includes(q))))
+    const list = (S.f.mst === 'deleted' ? allMerchants() : merchants()).filter(u => (S.f.mst === 'all' || mState(u) === S.f.mst || (S.f.mst === 'on' && mState(u) === 'soon')) && (!q || [u.displayName, u.email, u.phone].some(v => String(v || '').toLowerCase().includes(q))))
       .sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
     $('#mlist').innerHTML = list.length ? `<div class="tbl" style="border:0;border-radius:0"><table style="min-width:820px"><thead><tr><th>التاجر</th><th>البريد الإلكتروني</th><th>واتساب</th><th>الخطة</th><th>ينتهي في</th><th>الحالة</th><th>مفعّل</th><th></th></tr></thead><tbody>
       ${list.map(u => { const st = mState(u); return `<tr>
@@ -274,14 +294,15 @@ function planForm(p) {
   const m = modal(ed ? 'تعديل الخطة' : 'إضافة خطة', `
     <div class="field"><label>اسم الخطة</label><input id="plName" maxlength="60" value="${esc(p?.name || '')}"></div>
     <div class="field"><label>المدة بالأشهر</label><input id="plM" type="number" min="1" max="36" inputmode="numeric" dir="ltr" value="${p?.months || 1}"></div>
-    <div class="grid2 keep"><div class="field"><label>السعر بالدينار الليبي</label><input id="plLYD" inputmode="decimal" dir="ltr" value="${pr.LYD ?? ''}"></div>
-      <div class="field"><label>السعر بالريال السعودي</label><input id="plSAR" inputmode="decimal" dir="ltr" value="${pr.SAR ?? ''}"></div></div>
+    <div class="grid3"><div class="field"><label>السعر بالدينار الليبي</label><input id="plLYD" inputmode="decimal" dir="ltr" value="${pr.LYD ?? ''}"></div>
+      <div class="field"><label>السعر بالريال السعودي</label><input id="plSAR" inputmode="decimal" dir="ltr" value="${pr.SAR ?? ''}"></div>
+      <div class="field"><label>السعر بـ USDT</label><input id="plUSDT" inputmode="decimal" dir="ltr" value="${pr.USDT ?? ''}"></div></div>
     <p class="hint" style="margin:-6px 0 14px">اتركه فاضي لو الخطة ما تتباعش بهذي العملة</p>
     <label class="row" style="margin-bottom:16px"><span class="toggle"><input type="checkbox" id="plA" ${p?.active === false ? '' : 'checked'}><span></span></span> ظاهرة للتجار</label>
     <div class="mfoot"><button class="btn amber" id="plGo">${icon('check')} حفظ</button></div>`);
   $('#plGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const prices = {};
-    [['LYD', '#plLYD'], ['SAR', '#plSAR']].forEach(([c, sel]) => { const v = $(sel, m.el).value.trim(); if (v !== '') prices[c] = num(v); });
+    [['LYD', '#plLYD'], ['SAR', '#plSAR'], ['USDT', '#plUSDT']].forEach(([c, sel]) => { const v = $(sel, m.el).value.trim(); if (v !== '') prices[c] = num(v); });
     const d = { name: $('#plName', m.el).value.trim(), months: Math.floor(num($('#plM', m.el).value)), prices, active: $('#plA', m.el).checked };
     if (!d.name) throw new Error(t('اكتب اسم الخطة.'));
     if (d.months < 1) throw new Error(t('المدة شهر على الأقل.'));
@@ -341,7 +362,7 @@ const PRESETS = {
   bank: { name: 'تحويل مصرفي', inputLabel: 'رقم الإيصال أو اسم المحوّل', fields: ['اسم المصرف', 'اسم صاحب الحساب', 'رقم الحساب', 'رقم خدمة LY'] },
   libyana: { name: 'ليبيانا', inputLabel: 'رقم الهاتف اللي حوّلت منه', fields: ['رقم ليبيانا'] },
   madar: { name: 'المدار', inputLabel: 'رقم الهاتف اللي حوّلت منه', fields: ['رقم المدار'] },
-  usdt: { name: 'USDT', inputLabel: 'رقم العملية (TxID)', fields: ['الشبكة', 'عنوان المحفظة'] }
+  usdt: { name: 'USDT', inputLabel: 'رقم العملية (TxID)', fields: ['الشبكة', 'عنوان المحفظة'], currencies: ['USDT'] }
 };
 function vSettings() {
   const pf = S.platform;
@@ -399,6 +420,7 @@ function methodForm(m) {
     if (!$('#mName', el).value.trim() || Object.values(PRESETS).some(x => x.name === $('#mName', el).value.trim())) $('#mName', el).value = p.name;
     $('#mInput', el).value = p.inputLabel;
     $('#mFields', el).innerHTML = p.fields.map(l => fieldRow({ label: l })).join('');
+    if (p.currencies) $$('[data-mc]', el).forEach(x => x.classList.toggle('on', p.currencies.includes(x.dataset.mc)));
   });
   $('#mGo', el).onclick = e => busy(e.currentTarget, async () => {
     const fields = $$('.frow', el).map(r => ({ label: $('[data-fl]', r).value.trim(), value: $('[data-fv]', r).value.trim() })).filter(f => f.label && f.value).slice(0, 12);
@@ -419,6 +441,7 @@ const ACTS = {
   extend: id => { const u = S.users.find(x => x.id === id); u && extend(u); },
   delMerchant: id => { const u = S.users.find(x => x.id === id); u && delMerchant(u); },
   mst: id => { S.f.mst = id; vMerchants(); },
+  range: id => { S.range = id; if (id === 'custom' && !S.rFrom) { S.rFrom = toInput(Date.now() - 30 * DAY); S.rTo = toInput(Date.now()); } vHome(); bindRange(); },
   rst: id => { S.f.rst = id; vRequests(); },
   planForm: id => planForm(S.plans.find(p => p.id === id)),
   bannerForm: id => bannerForm(S.banners.find(b => b.id === id)),

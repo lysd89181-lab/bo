@@ -168,13 +168,23 @@ const D = {
   'حسابك محذوف. تواصل مع إدارة المنصة لو عندك استفسار.': 'Your account was deleted. Contact the platform admin if you have questions.', 'محذوف': 'Deleted',
   'حذف التاجر': 'Delete merchant', 'بيتمسح كل شي يخص': 'This permanently erases everything for', 'المنتجات، الملفات، الأكواد، الأرقام، العملاء، المبيعات، والقوالب.': 'products, profiles, codes, numbers, customers, sales and templates.',
   'الحذف نهائي وما يرجعش.': 'This cannot be undone.', 'للتأكيد اكتب إيميل التاجر': "Type the merchant's email to confirm", 'حذف نهائي': 'Delete permanently', 'تم حذف': 'Deleted', 'تم حذف التاجر': 'Merchant deleted',
+  'تجديدات قربت': 'Renewals due', 'قرب ينتهي': 'Ending soon', 'تجديدات مستحقة': 'Renewals due', 'أرباح اليوم': "Today's profit", 'تذكيرات اليوم': "Today's reminders",
+  'آخر العمليات': 'Latest sales', 'مبيعات الأمس': "Yesterday's sales", 'إرسال تذكير': 'Send reminder', 'اليوم': 'Today', 'هذا الأسبوع': 'This week', 'متأخر': 'Overdue',
+  'تابع زباينك قبل ما تنتهي اشتراكاتهم': 'Follow up before subscriptions end', 'ما فيش تجديدات قربت 🎉': 'No renewals due 🎉', 'كل زباينك مرتاحين': 'All your customers are covered',
+  'ما فيش ملفات للحين': 'No profiles yet', 'أضف أول حساب باش تبدأ البيع': 'Add your first account to start selling', 'ملفات': 'Profiles', 'أرقام': 'Numbers',
+  'اسمك ورقمك والعملة اللي تبيع بيها': 'Your name, number and selling currency', 'اشتراكك فعّال، ينتهي في': 'Your subscription is active, ends on',
+  'اضغط على أي متغير لإضافته في مكان المؤشر.': 'Tap a variable to insert it at the cursor.', 'إرسال تجريبي': 'Send test', 'أضف رقم واتسابك في "بياناتك" أولاً.': 'Add your WhatsApp number in "Your info" first.',
+  'تم البيع بنجاح': 'Sale completed', 'تم': 'Done', 'تم بيع': 'Sold', 'زيارة': 'Visit', 'ينتهي بعد يومين': 'Ends in 2 days',
+  'هذا الشهر': 'This month', 'مخصص': 'Custom', 'إيرادات الفترة': 'Period revenue', 'تجار جدد': 'New merchants', 'اشتراكات منتهية': 'Expired subscriptions',
+  'من أصل': 'out of', 'السعر بـ USDT': 'Price in USDT', 'USDT': 'USDT', 'الإجمالي': 'Total', 'يناير': 'January', 'أحمد': 'Ahmed',
   // أسماء الخطط الافتراضية والتواصل
   'ليبيا': 'Libya', 'السعودية': 'Saudi Arabia'
 };
 
 // أنماط للنصوص اللي فيها أرقام أو بيانات
 const P = [
-  [/^متبقي (\d+) (?:أيام|يوم)$/, '$1 days left'],
+  [/^متبقي (\d+) (?:أيام|يوم)$/, '$1 days left'], [/^ينتهي بعد (\d+) (?:أيام|يوم)$/, 'Ends in $1 days'], [/^الملف #(\d+) · (.+)$/, 'Profile #$1 · $2'],
+  [/^(.+) · الملف #(\d+)$/, '$1 · profile #$2'],
   [/^منذ (\d+) دقيقة$/, '$1 min ago'], [/^منذ (\d+) ساعة$/, '$1 h ago'], [/^منذ (\d+) يوم$/, '$1 days ago'],
   [/^(\d+) (?:أشهر|شهر)$/, '$1 months'], [/^شهر$/, '1 month'], [/^شهرين$/, '2 months'],
   [/^\+(\d+) (?:أشهر|شهر)$/, '+$1 months'], [/^\+شهر$/, '+1 month'], [/^\+شهرين$/, '+2 months'],
@@ -186,7 +196,7 @@ const P = [
   [/^مشترك حتى (.+)$/, 'Subscribed until $1'], [/^مرحباً، (.+)$/, 'Hello, $1'], [/^مرحباً، بيك$/, 'Hello'],
   [/^أهلاً (.*)، خطوة وحدة وتبدأ$/, 'Welcome $1, one step to start'],
   [/^اشتراكك في ملفي (.+)\.$/, (m, a) => `Your Malafy subscription: ${tr(a) || a}.`],
-  [/^(.+) إلى (.+)$/, '$1 to $2'], [/^ينتهي (\d{4}\/\d\d\/\d\d)$/, 'Ends $1'],
+  [/^(.+) إلى (.+)$/, '$1 to $2'], [/^ينتهي ([A-Z][a-z]{2} \d\d, \d{4})$/, 'Ends $1'],
   [/^مباع لـ (.+)$/, 'Sold to $1'], [/^تم إضافة (.+) بـ (\d+) ملفات$/, 'Added $1 with $2 profiles'], [/^تم إضافة (\d+) كود$/, 'Added $1 codes'],
   [/^تم إضافة (.+) مع (\d+) كود$/, 'Added $1 with $2 codes'], [/^تم إضافة (.+)$/, 'Added $1'],
   [/^تم تفعيل (.+)$/, 'Activated $1'], [/^تم إيقاف (.+)$/, 'Suspended $1'],
