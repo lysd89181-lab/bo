@@ -1,12 +1,13 @@
 // ملفي — لوحة الأدمن
 import {
   db, $, $$, esc, money, num, fmtDate, toInput, fromInput, addMonths, daysLeft, tsMs, ago, leftText, DAY,
-  waLink, icon, RIDGE, toast, skeleton, errText, startOfDay, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref,
+  waLink, icon, RIDGE, toast, copyText, skeleton, errText, startOfDay, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref,
   collection, doc, onSnapshot, writeBatch, setDoc, updateDoc, deleteDoc, getDocs, getDoc, Timestamp, serverTimestamp
 } from './core.js';
+import { setupAdminStore, vStoreOrders, vStores, vPayouts, vStaff, storeSettingsHTML, bindStoreSettings, awaitingOrders, bellItems, ADMIN_STORE_ACTS } from './admin-store.js';
 
 const S = { range: 'month', rFrom: '', rTo: '', users: [], requests: [], plans: [], platform: {}, methods: [], banners: [], loaded: new Set(), started: false, f: { mq: '', mst: 'all', rst: 'pending' } };
-const NEED = 6;
+let NEED = 6;
 // مبلغ الطلب بعملته (الطلبات القديمة بدون عملة)
 const rMoney = r => r.type === 'trial' ? '—' : r.currency ? moneyIn(r.price, r.currency) : money(r.price);
 const rPlan = r => r.type === 'trial' ? t('تجربة مجانية') : esc(r.planName);
@@ -22,17 +23,23 @@ const pendingReqs = () => S.requests.filter(r => r.status === 'pending');
 
 /* ================= التشغيل ================= */
 const { profile } = await requireUser();
-if (profile.role !== 'admin') { location.replace('app.html'); await new Promise(() => {}); }
-const NAV = [
+if (profile.role !== 'admin' && profile.role !== 'staff') { location.replace('app.html'); await new Promise(() => {}); }
+const ADMIN = profile.role === 'admin';
+const NAV = ADMIN ? [
   { id: 'home', icon: 'home', label: 'نظرة عامة' },
+  { id: 'sorders', icon: 'receipt', label: 'طلبات المتاجر' },
   { id: 'merchants', icon: 'users', label: 'التجار' },
   { id: 'requests', icon: 'inbox', label: 'طلبات الاشتراك' },
+  { id: 'stores', icon: 'store', label: 'المتاجر' },
+  { id: 'payouts', icon: 'wallet', label: 'التسويات' },
   { id: 'plans', icon: 'card', label: 'خطط الاشتراك' },
   { id: 'banners', icon: 'globe', label: 'البنرات' },
+  { id: 'staff', icon: 'shield', label: 'الموظفين' },
   { id: 'settings', icon: 'sliders', label: 'الإعدادات العامة' }
-];
-const UI = shell({ nav: NAV, name: profile.displayName || profile.email, sub: 'مدير المنصة', searchPh: 'ابحث عن تاجر بالاسم أو الإيميل…', bellHref: '#requests',
-  extra: `<a class="btn ghost sm" style="margin-top:14px" href="app.html">${icon('box')} لوحة التاجر</a>` });
+] : [{ id: 'sorders', icon: 'receipt', label: 'طلبات المتاجر' }];
+const UI = shell({ nav: NAV, name: profile.displayName || profile.email, sub: ADMIN ? 'مدير المنصة' : 'موظف', searchPh: 'ابحث عن تاجر بالاسم أو الإيميل…', bellHref: ADMIN ? '#requests' : '#sorders',
+  extra: ADMIN ? `<a class="btn ghost sm" style="margin-top:14px" href="app.html">${icon('box')} لوحة التاجر</a>` : '' });
+if (!ADMIN) document.body.classList.add('staffmode');
 const view = UI.view;
 view.innerHTML = `<div class="card" style="margin-bottom:16px">${skeleton(3)}</div><div class="card">${skeleton(5)}</div>`;
 
@@ -41,22 +48,27 @@ const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(
 const arrived = k => { S.loaded.add(k); if (!S.started && S.loaded.size >= NEED) { S.started = true; render(true); } else if (S.started) schedule(); };
 const onErr = e => { console.error(e); toast('تعذر تحميل البيانات. تأكد إن حسابك أدمن والقواعد منشورة.', 'bad'); };
 const ids = s => s.docs.map(d => ({ id: d.id, ...d.data() }));
-onSnapshot(collection(db, 'users'), s => { S.users = ids(s); arrived('users'); }, onErr);
-onSnapshot(collection(db, 'subscriptionRequests'), s => { S.requests = ids(s).sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt)); arrived('requests'); }, onErr);
-onSnapshot(collection(db, 'plans'), s => { S.plans = ids(s).sort((a, b) => a.months - b.months); arrived('plans'); }, onErr);
-onSnapshot(doc(db, 'settings', 'platform'), s => { S.platform = s.exists() ? s.data() : {}; arrived('platform'); }, onErr);
-onSnapshot(collection(db, 'banners'), s => { S.banners = ids(s).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('banners'); }, onErr);
-onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = ids(s).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
+if (ADMIN) {
+  NEED = 10;
+  onSnapshot(collection(db, 'users'), s => { S.users = ids(s); arrived('users'); }, onErr);
+  onSnapshot(collection(db, 'subscriptionRequests'), s => { S.requests = ids(s).sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt)); arrived('requests'); }, onErr);
+  onSnapshot(collection(db, 'plans'), s => { S.plans = ids(s).sort((a, b) => a.months - b.months); arrived('plans'); }, onErr);
+  onSnapshot(doc(db, 'settings', 'platform'), s => { S.platform = s.exists() ? s.data() : {}; arrived('platform'); }, onErr);
+  onSnapshot(collection(db, 'banners'), s => { S.banners = ids(s).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('banners'); }, onErr);
+  onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = ids(s).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
+} else NEED = 4;
+setupAdminStore({ isAdmin: ADMIN, users: () => S.users, refresh: k => k === 'orders' || k === 'stores' || k === 'wallets' || k === 'payouts' ? arrived(k) : S.started && schedule(), rerender: () => render(false) });
 window.addEventListener('hashchange', () => S.started && render(true));
 
-const VIEWS = { home: vHome, merchants: vMerchants, requests: vRequests, plans: vPlans, banners: vBanners, settings: vSettings };
+const VIEWS = ADMIN ? { home: vHome, sorders: () => vStoreOrders(view), merchants: vMerchants, requests: vRequests, stores: () => vStores(view), payouts: () => vPayouts(view), plans: vPlans, banners: vBanners, staff: () => vStaff(view), settings: vSettings } : { sorders: () => vStoreOrders(view) };
 function render(fresh) {
   let r = (location.hash || '#home').slice(1);
-  if (!VIEWS[r]) r = 'home';
+  if (!VIEWS[r]) r = ADMIN ? 'home' : 'sorders';
   UI.setActive(r); VIEWS[r](); if (r === 'home') bindRange();
   if (fresh) { animate(view); window.scrollTo(0, 0); } else view.classList.remove('anim');
-  const p = pendingReqs().length; UI.setBadge('requests', p);
-  UI.setBell(p, p ? pendingReqs().slice(0, 5).map(r => `<a class="bellitem soon" href="#requests"><b data-raw>${esc(r.merchantName || r.merchantEmail)}</b><small>${rPlan(r)}${r.type === 'trial' ? '' : ' · ' + rMoney(r)}</small></a>`).join('') : `<p class="muted small" style="padding:12px">${t('ما فيش طلبات جديدة.')}</p>`);
+  const p = pendingReqs().length, so = awaitingOrders().length; UI.setBadge('requests', p); UI.setBadge('sorders', so);
+  const html = bellItems() + (p ? pendingReqs().slice(0, 5).map(r => `<a class="bellitem soon" href="#requests"><b data-raw>${esc(r.merchantName || r.merchantEmail)}</b><small>${rPlan(r)}${r.type === 'trial' ? '' : ' · ' + rMoney(r)}</small></a>`).join('') : '');
+  UI.setBell(p + so, html || `<p class="muted small" style="padding:12px">${t('ما فيش طلبات جديدة.')}</p>`);
 }
 
 /* ================= نظرة عامة ================= */
@@ -88,6 +100,7 @@ function vHome() {
   view.innerHTML = `
   <div class="dash">
     <aside class="dash-side" style="display:flex;flex-direction:column;gap:22px">
+      ${awaitingOrders().length ? `<a class="card glow rv chan" href="#sorders"><span class="fic">${icon('receipt')}</span><span class="fmid"><b>${t('طلبات متاجر بانتظار تأكيد الدفع')}</b><small>${awaitingOrders().length} ${t('طلب')}</small></span><span class="btn amber sm">${t('راجع')}</span></a>` : ''}
       <div class="card rv">
         <div class="chead"><div><h2>طلبات تنتظرك</h2><p>فعّل التجار بعد التأكد من الدفع</p></div><a class="link" href="#requests">الكل</a></div>
         <div class="rems">${pendingReqs().length ? pendingReqs().slice(0, 5).map(reqCard).join('') : empty('inbox', 'ما فيش طلبات جديدة.')}</div>
@@ -171,7 +184,7 @@ function vMerchants() {
     const q = S.f.mq.trim().toLowerCase();
     const list = (S.f.mst === 'deleted' ? allMerchants() : merchants()).filter(u => (S.f.mst === 'all' || mState(u) === S.f.mst || (S.f.mst === 'on' && mState(u) === 'soon')) && (!q || [u.displayName, u.email, u.phone].some(v => String(v || '').toLowerCase().includes(q))))
       .sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
-    $('#mlist').innerHTML = list.length ? `<div class="tbl" style="border:0;border-radius:0"><table style="min-width:820px"><thead><tr><th>التاجر</th><th>البريد الإلكتروني</th><th>واتساب</th><th>الخطة</th><th>ينتهي في</th><th>الحالة</th><th>مفعّل</th><th></th></tr></thead><tbody>
+    $('#mlist').innerHTML = list.length ? `<div class="tbl" style="border:0;border-radius:0"><table style="min-width:820px"><thead><tr><th>التاجر</th><th>البريد الإلكتروني</th><th>واتساب</th><th>الخطة</th><th>ينتهي في</th><th>الحالة</th><th>مفعّل</th><th>${t('متجر')}</th><th></th></tr></thead><tbody>
       ${list.map(u => { const st = mState(u); return `<tr>
         <td><b>${esc(u.displayName || '—')}</b><br><small class="dim">${tsMs(u.createdAt) ? 'سجّل ' + fmtDate(tsMs(u.createdAt)) : ''}</small></td>
         <td class="ltr">${esc(u.email)}</td><td class="ltr">${esc(u.phone || '—')}</td>
@@ -179,8 +192,13 @@ function vMerchants() {
         <td class="num">${exp(u) ? fmtDate(exp(u)) : '—'}</td>
         <td><span class="badge ${ST[st][0]}">${ST[st][1]}</span></td>
         <td>${st === 'deleted' ? '' : `<label class="toggle"><input type="checkbox" data-toggle="${u.id}" ${u.isActive ? 'checked' : ''} aria-label="تفعيل ${esc(u.displayName)}"><span></span></label>`}</td>
+        <td>${st === 'deleted' ? '' : `<label class="toggle" title="${t('متجر حتى لو خطته ما فيهاش')}"><input type="checkbox" data-sacc="${u.id}" ${u.storeAccess ? 'checked' : ''} aria-label="${t('السماح بالمتجر')}"><span></span></label>`}</td>
         <td>${st === 'deleted' ? '' : `<div class="row" style="flex-wrap:nowrap"><button class="btn ghost sm" data-act="extend" data-id="${u.id}">${icon('clock')} تمديد</button>${u.phone ? `<a class="iconbtn sm" target="_blank" rel="noopener" href="${waLink(u.phone, '')}" aria-label="واتساب">${icon('wa')}</a>` : ''}<button class="iconbtn sm" data-act="delMerchant" data-id="${u.id}" aria-label="حذف التاجر">${icon('trash')}</button></div>`}</td></tr>`; }).join('')}
     </tbody></table></div>` : empty('users', 'ما فيش تجار يطابقوا البحث.');
+    $$('[data-sacc]').forEach(x => x.onchange = async () => {
+      try { await updateDoc(doc(db, 'users', x.dataset.sacc), { storeAccess: x.checked }); toast(x.checked ? t('تم السماح بالمتجر') : t('تم إلغاء السماح بالمتجر')); }
+      catch (e) { x.checked = !x.checked; toast(e.message, 'bad'); }
+    });
     $$('[data-toggle]').forEach(t => t.onchange = async () => {
       const u = S.users.find(x => x.id === t.dataset.toggle);
       try { await updateDoc(doc(db, 'users', u.id), { isActive: t.checked }); toast(t.checked ? `تم تفعيل ${u.displayName}` : `تم إيقاف ${u.displayName}`); }
@@ -307,7 +325,7 @@ function vPlans() {
     <button class="btn amber" data-act="planForm">${icon('plus')} إضافة خطة</button></div>
   ${S.plans.length ? `<div class="plans" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">${S.plans.map(p => { const pr = planPrices(p); return `
     <div class="plan card rv" style="cursor:default;${p.active === false ? 'opacity:.55' : ''}">
-      <b data-raw>${esc(p.name)}</b>${Object.keys(pr).map(c => `<div class="pr" style="font-size:24px">${moneyIn(pr[c], c)}</div>`).join('') || '<div class="pr">—</div>'}<small class="dim">${monthsTxt(p.months)}</small>${p.active === false ? ' <small class="dim">مخفية</small>' : ''}
+      <b data-raw>${esc(p.name)}</b>${p.storeEnabled ? `<span class="badge ok" style="margin:6px auto 0">${icon('store')} ${t('فيها متجر')}</span>` : ''}${Object.keys(pr).map(c => `<div class="pr" style="font-size:24px">${moneyIn(pr[c], c)}</div>`).join('') || '<div class="pr">—</div>'}<small class="dim">${monthsTxt(p.months)}</small>${p.active === false ? ' <small class="dim">مخفية</small>' : ''}
       <div class="row" style="justify-content:center;margin-top:14px"><button class="btn ghost sm" data-act="planForm" data-id="${p.id}">${icon('edit')} تعديل</button><button class="iconbtn sm" data-act="planDel" data-id="${p.id}" aria-label="حذف">${icon('trash')}</button></div>
     </div>`; }).join('')}</div>` : `<div class="card rv">${empty('card', 'ما فيش خطط. أضف خطة باش التجار يقدروا يشتركوا.', `<button class="btn amber" data-act="planForm">${icon('plus')} إضافة خطة</button>`)}</div>`}`;
 }
@@ -320,12 +338,13 @@ function planForm(p) {
       <div class="field"><label>السعر بالريال السعودي</label><input id="plSAR" inputmode="decimal" dir="ltr" value="${pr.SAR ?? ''}"></div>
       <div class="field"><label>السعر بـ USDT</label><input id="plUSDT" inputmode="decimal" dir="ltr" value="${pr.USDT ?? ''}"></div></div>
     <p class="hint" style="margin:-6px 0 14px">اتركه فاضي لو الخطة ما تتباعش بهذي العملة</p>
-    <label class="row" style="margin-bottom:16px"><span class="toggle"><input type="checkbox" id="plA" ${p?.active === false ? '' : 'checked'}><span></span></span> ظاهرة للتجار</label>
+    <label class="row" style="margin-bottom:12px"><span class="toggle"><input type="checkbox" id="plA" ${p?.active === false ? '' : 'checked'}><span></span></span> ظاهرة للتجار</label>
+    <label class="row" style="margin-bottom:16px"><span class="toggle"><input type="checkbox" id="plS" ${p?.storeEnabled ? 'checked' : ''}><span></span></span> ${t('فيها متجر خاص للتاجر')}</label>
     <div class="mfoot"><button class="btn amber" id="plGo">${icon('check')} حفظ</button></div>`);
   $('#plGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const prices = {};
     [['LYD', '#plLYD'], ['SAR', '#plSAR'], ['USDT', '#plUSDT']].forEach(([c, sel]) => { const v = $(sel, m.el).value.trim(); if (v !== '') prices[c] = num(v); });
-    const d = { name: $('#plName', m.el).value.trim(), months: Math.floor(num($('#plM', m.el).value)), prices, active: $('#plA', m.el).checked };
+    const d = { name: $('#plName', m.el).value.trim(), months: Math.floor(num($('#plM', m.el).value)), prices, active: $('#plA', m.el).checked, storeEnabled: $('#plS', m.el).checked };
     if (!d.name) throw new Error(t('اكتب اسم الخطة.'));
     if (d.months < 1) throw new Error(t('المدة شهر على الأقل.'));
     if (!Object.keys(prices).length || Object.values(prices).some(v => v <= 0)) throw new Error(t('حط سعر بعملة وحدة على الأقل.'));
@@ -403,13 +422,14 @@ function vSettings() {
     <div class="field"><label>رابط قناة تيليجرام</label><input id="gsTgCh" dir="ltr" maxlength="300" placeholder="https://t.me/..." value="${esc(pf.tgChannel || '')}"></div>
     <button class="btn amber" id="gsSave">حفظ</button>
   </section>
+  ${storeSettingsHTML(pf)}
   <section class="card glow rv" style="max-width:860px">
     <div class="chead"><div><h2>طرق الدفع</h2><p>التاجر يختار وحدة، وتطلعله تفاصيلها جاهزة للنسخ</p></div>
       <button class="btn amber sm" data-act="methodForm">${icon('plus')} إضافة طريقة</button></div>
     ${S.methods.length ? `<div class="rems">${S.methods.map(m => `
       <div class="rem" style="grid-template-columns:auto 1fr auto;${m.active === false ? 'opacity:.55' : ''}">
         ${safeImg(m.image) ? `<img src="${safeImg(m.image)}" alt="" style="width:52px;height:52px;border-radius:12px;object-fit:contain;background:#fff;padding:4px">` : `<span class="avatar">${icon('card')}</span>`}
-        <div><b>${esc(m.name)}</b><small>${(m.fields || []).filter(f => f.value).length} حقل${m.active === false ? '، مخفية' : ''}</small></div>
+        <div><b>${esc(m.name)}</b><small>${(m.fields || []).filter(f => f.value).length} حقل${(m.useFor || ['subs']).includes('store') ? ` · ${t('متاجر')}` : ''}${(m.useFor || ['subs']).includes('subs') ? ` · ${t('اشتراكات')}` : ''}${m.active === false ? '، مخفية' : ''}</small></div>
         <div class="row" style="flex-wrap:nowrap"><button class="btn ghost sm" data-act="methodForm" data-id="${m.id}">${icon('edit')} تعديل</button><button class="iconbtn sm" data-act="methodDel" data-id="${m.id}" aria-label="حذف">${icon('trash')}</button></div>
       </div>`).join('')}</div>` : empty('card', 'ما فيش طرق دفع. أضف مصرف أو ليبيانا باش التاجر يعرف وين يحوّل.', `<button class="btn amber" data-act="methodForm">${icon('plus')} إضافة طريقة</button>`)}
   </section>`;
@@ -425,6 +445,7 @@ function vSettings() {
     }, { merge: true });
     toast('تم الحفظ');
   });
+  bindStoreSettings(d => setDoc(doc(db, 'settings', 'platform'), d, { merge: true }));
 }
 function methodForm(m) {
   const ed = !!m;
@@ -441,6 +462,7 @@ function methodForm(m) {
     <div class="field"><label>الحقل اللي يعبيه التاجر</label><input id="mInput" maxlength="80" value="${esc(m?.inputLabel || 'رقم العملية')}"></div>
     <div class="field"><label>ملاحظة تظهر تحت التفاصيل (اختياري)</label><input id="mNote" maxlength="300" value="${esc(m?.note || '')}"></div>
     <div class="field"><label>صورة الإيصال</label><div class="chips">${[['none', 'بدون'], ['optional', 'اختياري'], ['required', 'إجباري']].map(([k, l]) => `<button type="button" class="chip ${(m?.receipt || 'none') === k ? 'on' : ''}" data-rc="${k}">${l}</button>`).join('')}</div></div>
+    <div class="field"><label>${t('تظهر في')}</label><div class="chips">${[['subs', 'اشتراكات التجار'], ['store', 'متاجر التجار (للزبائن)']].map(([k, l]) => `<button type="button" class="chip ${(m?.useFor || ['subs']).includes(k) ? 'on' : ''}" data-uf="${k}">${t(l)}</button>`).join('')}</div></div>
     <div class="field"><label>العملات</label><div class="chips">${Object.keys(CURS).map(c => `<button type="button" class="chip ${!m?.currencies?.length || m.currencies.includes(c) ? 'on' : ''}" data-mc="${c}">${CURS[c].name}</button>`).join('')}</div></div>
     <div class="grid2 keep"><div class="field"><label>الترتيب</label><input id="mOrder" type="number" inputmode="numeric" dir="ltr" value="${m?.order ?? S.methods.length + 1}"></div>
       <label class="row" style="margin-top:22px"><span class="toggle"><input type="checkbox" id="mActive" ${m?.active === false ? '' : 'checked'}><span></span></span> ظاهرة للتجار</label></div>
@@ -450,6 +472,7 @@ function methodForm(m) {
   $('#mImg', el).onchange = async e => { try { setImg(await compressImage(e.target.files[0])); } catch (err) { toast(err.message, 'bad'); } e.target.value = ''; };
   $('#mImgDel', el).onclick = () => setImg('');
   $$('[data-mc]', el).forEach(x => x.onclick = () => x.classList.toggle('on'));
+  $$('[data-uf]', el).forEach(x => x.onclick = () => x.classList.toggle('on'));
   $$('[data-rc]', el).forEach(x => x.onclick = () => $$('[data-rc]', el).forEach(y => y.classList.toggle('on', y === x)));
   $('#mAddF', el).onclick = () => $('#mFields', el).insertAdjacentHTML('beforeend', fieldRow());
   $('#mFields', el).addEventListener('click', e => { const d = e.target.closest('[data-del]'); if (d) d.closest('.frow').remove(); });
@@ -463,10 +486,11 @@ function methodForm(m) {
   });
   $('#mGo', el).onclick = e => busy(e.currentTarget, async () => {
     const fields = $$('.frow', el).map(r => ({ label: $('[data-fl]', r).value.trim(), value: $('[data-fv]', r).value.trim() })).filter(f => f.label && f.value).slice(0, 12);
-    const d = { name: $('#mName', el).value.trim(), image: image || '', fields, inputLabel: $('#mInput', el).value.trim() || 'رقم العملية', note: $('#mNote', el).value.trim(), currencies: $$('[data-mc].on', el).map(x => x.dataset.mc), receipt: $('[data-rc].on', el)?.dataset.rc || 'none', order: Math.floor(num($('#mOrder', el).value)), active: $('#mActive', el).checked };
+    const d = { name: $('#mName', el).value.trim(), image: image || '', fields, inputLabel: $('#mInput', el).value.trim() || 'رقم العملية', note: $('#mNote', el).value.trim(), currencies: $$('[data-mc].on', el).map(x => x.dataset.mc), receipt: $('[data-rc].on', el)?.dataset.rc || 'none', useFor: $$('[data-uf].on', el).map(x => x.dataset.uf), order: Math.floor(num($('#mOrder', el).value)), active: $('#mActive', el).checked };
     if (!d.name) throw new Error(t('اكتب اسم الطريقة.'));
     if (!fields.length) throw new Error(t('عبّي حقل واحد على الأقل (الاسم والقيمة).'));
     if (!$$('[data-mc].on', el).length) throw new Error(t('اختار عملة وحدة على الأقل.'));
+    if (!d.useFor.length) throw new Error(t('اختار وين تظهر الطريقة.'));
     await setDoc(ed ? doc(db, 'paymentMethods', m.id) : doc(collection(db, 'paymentMethods')), d);
     md.close(); toast('تم حفظ طريقة الدفع');
   });
@@ -475,6 +499,8 @@ function methodForm(m) {
 /* ================= الأحداث والبحث ================= */
 const R = id => S.requests.find(r => r.id === id);
 const ACTS = {
+  ...ADMIN_STORE_ACTS,
+  copy: (id, b) => copyText(b.dataset.v),
   approve: id => R(id) && approve(R(id)),
   receipt: id => R(id) && showReceipt(R(id)),
   reject: id => R(id) && reject(R(id)),

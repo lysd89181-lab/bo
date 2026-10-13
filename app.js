@@ -5,6 +5,7 @@ import {
   confirmBox, busy, empty, skeleton, fmtShort, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification,
   collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, addDoc, serverTimestamp
 } from './core.js';
+import { setupStore, startStore, stopStore, storeView, storeBell, scheduleSync, STORE_ACTS, storeState } from './mystore.js';
 
 /* ================= الحالة ================= */
 const DEFAULT_TPL_EN = {
@@ -26,8 +27,8 @@ const TPL_VARS = {
   number: ['name', 'country', 'number'],
   reminder: ['name', 'product', 'file', 'expiry_date']
 };
-const TYPE_TXT = { account: 'ملف', code: 'كود', number: 'رقم' };
-const STATE_TXT = { av: 'متاح', sold: 'مباع', soon: 'قرب ينتهي', over: 'انتهى', dead: 'منتهي' };
+const TYPE_TXT = { account: 'ملف', code: 'كود', number: 'رقم', manual: 'خدمة' };
+const STATE_TXT = { av: 'متاح', res: 'محجوز', sold: 'مباع', soon: 'قرب ينتهي', over: 'انتهى', dead: 'منتهي' };
 const SERVICES = ['Netflix', 'Shahid VIP', 'OSN+', 'Disney+', 'Amazon Prime', 'Spotify', 'YouTube Premium', 'TOD', 'beIN Connect', 'Apple TV+'];
 const CODE_HINTS = ['ببجي 60 UC', 'ببجي 325 UC', 'فري فاير 100 جوهرة', 'فري فاير 530 جوهرة', 'iTunes أمريكي 10$', 'iTunes أمريكي 25$', 'Google Play 10$', 'PlayStation 10$'];
 const COUNTRIES = ['أمريكا', 'بريطانيا', 'كندا', 'ألمانيا', 'فرنسا', 'هولندا', 'السويد', 'إندونيسيا', 'روسيا', 'البرازيل'];
@@ -55,6 +56,7 @@ const availCodes = pid => codesOf(pid).filter(c => c.status === 'available');
 function fileState(f) {
   const p = P(f.productId);
   if (accDead(p)) return 'dead';
+  if (f.status === 'reserved') return 'res';
   if (f.status === 'sold') {
     if (f.endDate <= Date.now()) return 'over';
     return daysLeft(f.endDate) <= 3 ? 'soon' : 'sold';
@@ -87,10 +89,12 @@ function planLine() {
 
 /* ================= التشغيل ================= */
 const { profile } = await requireUser();
+if (profile.role === 'staff') { location.replace('admin.html'); await new Promise(() => {}); }
 S.profile = profile;
 setCurrency(profile.currency);
 const NAV = [
   { id: 'home', icon: 'home', label: 'الرئيسية' },
+  { id: 'store', icon: 'store', label: 'متجري' },
   { id: 'products', icon: 'box', label: 'المنتجات' },
   { id: 'files', icon: 'folder', label: 'الملفات' },
   { id: 'sales', icon: 'cart', label: 'المبيعات' },
@@ -116,6 +120,7 @@ const isDeleted = () => S.profile.status === 'deleted';
 const ready = () => BASE.every(k => S.loaded.has(k)) && (isDeleted() || !isActive() || MER.every(k => S.loaded.has(k)));
 function arrived(k) {
   S.loaded.add(k);
+  if (['products', 'files', 'codes', 'numbers'].includes(k)) scheduleSync();
   if (!S.started && ready()) { S.started = true; render(true); }
   else if (S.started) schedule();
 }
@@ -126,8 +131,10 @@ function startMerchant() {
   const sub = (name, ref) => onSnapshot(ref, snap => { S[name] = snap.docs.map(d => ({ id: d.id, ...d.data() })); arrived(name); }, onErr);
   merUnsubs = ['products', 'files', 'codes', 'numbers', 'customers', 'sales'].map(n => sub(n, mcol(n)));
   merUnsubs.push(onSnapshot(mdoc('settings', 'templates'), s => { S.tpl = { ...DEFAULT_TPL, ...(s.exists() ? s.data() : {}) }; arrived('tpl'); }, onErr));
+  startStore();
 }
 function stopMerchant() {
+  if (merUnsubs.length) stopStore();
   merUnsubs.forEach(u => u()); merUnsubs = [];
   MER.forEach(k => S.loaded.delete(k));
   ['products', 'files', 'codes', 'numbers', 'customers', 'sales'].forEach(n => { S[n] = []; });
@@ -146,7 +153,7 @@ onSnapshot(doc(db, 'users', uid()), s => {
 onSnapshot(collection(db, 'plans'), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); arrived('plans'); }, onErr);
 onSnapshot(doc(db, 'settings', 'platform'), s => { S.platform = s.exists() ? s.data() : {}; arrived('platform'); }, onErr);
 onSnapshot(collection(db, 'banners'), s => { S.banners = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(b => b.active !== false && safeImg(b.image)).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('banners'); }, onErr);
-onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.active !== false).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
+onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.active !== false && (!Array.isArray(m.useFor) || m.useFor.includes('subs'))).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
 onSnapshot(query(collection(db, 'subscriptionRequests'), where('merchantId', '==', uid())), s => {
   S.requests = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt)); arrived('requests');
 }, onErr);
@@ -163,10 +170,15 @@ setInterval(() => {
 }, 15000);
 
 /* ================= الموجّه ================= */
-const VIEWS = { channels: vChannels, home: vHome, products: vProducts, files: vFiles, sales: vSales, customers: vCustomers, reminders: vReminders, settings: vSettings };
+setupStore({ S, view, uid, isActive, refresh: () => S.started && schedule(), loaded: () => MER.every(k => S.loaded.has(k)) });
+const VIEWS = { store: () => storeView(storeSub), channels: vChannels, home: vHome, products: vProducts, files: vFiles, sales: vSales, customers: vCustomers, reminders: vReminders, settings: vSettings };
+let storeSub = '';
 function render(fresh) {
   let r = (location.hash || '#home').slice(1);
+  [r, storeSub = ''] = r.split('/');
   if (!VIEWS[r]) r = 'home';
+  if (!(r === 'store' && storeSub === 'design') && !document.querySelector('.mback')) document.body.classList.remove('noscroll');
+  if (!fresh && r === 'store' && storeSub === 'design' && document.getElementById('ed')) return;
   if (isDeleted()) { UI.setActive(''); vDeleted(); }
   else if (needsVerify()) { UI.setActive(''); vVerify(); }
   else if (!isActive() && r !== 'channels') { UI.setActive(''); vGate(); }
@@ -177,7 +189,9 @@ function render(fresh) {
   const u = urgentCount();
   const urgent = reminders().filter(f => ['soon', 'over'].includes(fileState(f))).slice(0, 5);
   UI.setBadge('reminders', u);
-  UI.setBell(u, urgent.length ? urgent.map(f => `<button type="button" class="bellitem ${fileState(f)}" data-act="tile" data-id="${f.id}"><b>${esc(f.customerName || '—')}</b><small>${esc(P(f.productId)?.name || '')} · ${t(leftText(f.endDate))}</small></button>`).join('') : `<p class="muted small" style="padding:12px">${t('ما فيش تجديدات قربت 🎉')}</p>`);
+  const sb = storeBell();
+  UI.setBadge('store', sb.n);
+  UI.setBell(u + sb.n, (sb.html + urgent.map(f => `<button type="button" class="bellitem ${fileState(f)}" data-act="tile" data-id="${f.id}"><b>${esc(f.customerName || '—')}</b><small>${esc(P(f.productId)?.name || '')} · ${t(leftText(f.endDate))}</small></button>`).join('')) || `<p class="muted small" style="padding:12px">${t('ما فيش تنبيهات جديدة 🎉')}</p>`);
 }
 const guardWrite = () => { if (isActive()) return true; toast('اشتراكك غير مفعّل. فعّله من صفحة الاشتراك.', 'bad'); return false; };
 
@@ -186,11 +200,11 @@ const guardWrite = () => { if (isActive()) return true; toast('اشتراكك غ
 function fileRow(f) {
   const st = fileState(f);
   const ic = st === 'av' ? 'folderOpen' : st === 'dead' ? 'ban' : 'folder';
-  const sub = st === 'av' ? 'جاهز للبيع' : st === 'dead' ? 'الحساب منتهي' : esc(f.customerName || '');
-  const badge = { av: 'ok', sold: 'off', soon: 'warn', over: 'bad', dead: 'off' }[st];
+  const sub = st === 'av' ? 'جاهز للبيع' : st === 'dead' ? 'الحساب منتهي' : st === 'res' ? 'محجوز لطلب في المتجر' : esc(f.customerName || '');
+  const badge = { av: 'ok', res: 'info', sold: 'off', soon: 'warn', over: 'bad', dead: 'off' }[st];
   return `<button type="button" class="frow-item ${st}" data-act="tile" data-id="${f.id}" ${st === 'dead' ? 'disabled' : ''}>
     <span class="fic">${icon(ic)}</span>
-    <span class="fmid"><b>الملف #${f.fileNumber}</b><small>${sub}${st !== 'av' && st !== 'dead' && f.endDate ? ` · ${fmtShort(f.endDate)}` : ''}</small></span>
+    <span class="fmid"><b>الملف #${f.fileNumber}</b><small>${sub}${!['av', 'dead', 'res'].includes(st) && f.endDate ? ` · ${fmtShort(f.endDate)}` : ''}</small></span>
     <span class="badge ${badge}">${STATE_TXT[st]}</span><span class="chev">${icon('arrow')}</span></button>`;
 }
 // صف تجديد (التذكيرات والرئيسية)
@@ -208,7 +222,7 @@ function salesRows(list, actions = true) {
     <td><b>${esc(s.customerName)}</b></td>
     <td>${esc(s.productName)}</td>
     <td><span class="ltr">${esc(s.itemLabel || '')}</span></td>
-    <td><span class="tag">${TYPE_TXT[s.type]}</span></td>
+    <td><span class="tag">${TYPE_TXT[s.type] || ''}</span>${s.source === 'store' ? ` <span class="tag" style="color:var(--amber-t)">${t('متجر')}</span>` : ''}</td>
     <td class="num"><span class="price">${money(s.price)}</span></td>
     <td class="num ${s.profit < 0 ? 't-bad' : 't-ok'}">${money(s.profit)}</td>
     <td class="num">${fmtDate(s.date)}</td>
@@ -328,7 +342,7 @@ function renderNumbers() {
       .sort((a, b) => (a.status === 'available' ? 0 : 1) - (b.status === 'available' ? 0 : 1) || b.createdAt - a.createdAt);
     $('#nlist').innerHTML = list.length ? `<div class="tbl" style="border:0;border-radius:0"><table><thead><tr><th>الرقم</th><th>الدولة</th><th>الشراء</th><th>البيع</th><th>الحالة</th><th></th></tr></thead><tbody>
       ${list.map(n => `<tr><td><b class="ltr">${esc(n.number)}</b></td><td>${esc(n.country)}</td><td class="num">${money(n.purchasePrice)}</td><td class="num"><span class="price">${money(n.sellPrice)}</span></td>
-        <td>${n.status === 'available' ? '<span class="badge ok">متاح</span>' : `<span class="badge off">مباع${n.customerName ? ' لـ ' + esc(n.customerName) : ''}</span>`}</td>
+        <td>${n.status === 'available' ? '<span class="badge ok">متاح</span>' : n.status === 'reserved' ? '<span class="badge info">محجوز</span>' : `<span class="badge off">مباع${n.customerName ? ' لـ ' + esc(n.customerName) : ''}</span>`}</td>
         <td><div class="row" style="flex-wrap:nowrap">${n.status === 'available' ? `<button class="btn amber sm" data-act="sellNum" data-id="${n.id}">بيع</button>` : ''}
           <button class="iconbtn sm" data-act="copy" data-v="${esc(n.number)}" aria-label="نسخ">${icon('copy')}</button>
           <button class="iconbtn sm" data-act="editNum" data-id="${n.id}" aria-label="تعديل">${icon('edit')}</button>
@@ -907,6 +921,7 @@ function fileDetails(f) {
   const st = fileState(f), p = P(f.productId);
   if (st === 'av') return sellAccount({ file: f });
   if (st === 'dead') return;
+  if (st === 'res') { toast(t('الملف محجوز لطلب في متجرك لين يتأكد الدفع.')); return; }
   const m = modal(`${esc(p.name)}، الملف #${f.fileNumber}`, `
     <div class="summary">
       <div><span>الزبون</span><b>${esc(f.customerName)}</b></div>
@@ -1013,7 +1028,7 @@ function addCodes(p) {
 function viewCodes(p) {
   const list = codesOf(p.id).sort((a, b) => (a.status === 'available' ? 0 : 1) - (b.status === 'available' ? 0 : 1));
   modal(`أكواد ${esc(p.name)}`, list.length ? `<div class="tbl"><table style="min-width:420px"><thead><tr><th>الكود</th><th>الحالة</th><th></th></tr></thead><tbody>${list.map(c => `
-    <tr><td><b class="ltr">${esc(c.code)}</b></td><td>${c.status === 'available' ? '<span class="badge ok">متاح</span>' : `<span class="badge off">مباع${c.customerName ? ' لـ ' + esc(c.customerName) : ''}</span>`}</td>
+    <tr><td><b class="ltr">${esc(c.code)}</b></td><td>${c.status === 'available' ? '<span class="badge ok">متاح</span>' : c.status === 'reserved' ? '<span class="badge info">محجوز</span>' : `<span class="badge off">مباع${c.customerName ? ' لـ ' + esc(c.customerName) : ''}</span>`}</td>
     <td><div class="row" style="flex-wrap:nowrap"><button class="iconbtn sm" data-act="copy" data-v="${esc(c.code)}" aria-label="نسخ">${icon('copy')}</button>${c.status === 'available' ? `<button class="iconbtn sm" data-act="delCode" data-id="${c.id}" aria-label="حذف">${icon('trash')}</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div>` : empty('ticket', 'ما فيش أكواد.'), { wide: true });
 }
 function numberForm(existing) {
@@ -1042,6 +1057,7 @@ function numberForm(existing) {
 async function delProduct(p) {
   if (!guardWrite()) return;
   const kids = p.type === 'account' ? filesOf(p.id) : codesOf(p.id);
+  if (kids.some(k => k.status === 'reserved')) { toast(t('فيه عناصر محجوزة لطلبات في متجرك. استنى لين تتأكد أو تنرفض.'), 'bad'); return; }
   const soldNow = p.type === 'account' ? kids.filter(f => f.status === 'sold' && f.endDate > Date.now()).length : 0;
   const ok = await confirmBox(`حذف "${esc(p.name)}" مع ${kids.length} ${p.type === 'account' ? 'ملف' : 'كود'}؟ سجل المبيعات يبقى محفوظ.${soldNow ? `<br><br><b class="t-bad">فيه ${soldNow} ملف عليه اشتراك نشط.</b>` : ''}`, { ok: 'حذف', danger: true, title: 'حذف المنتج' });
   if (!ok) return;
@@ -1092,13 +1108,15 @@ function resend(s) {
     const p = P(s.productId), f = S.files.find(x => x.id === s.itemId);
     if (!p) { toast('المنتج محذوف، ما نقدرش نجيب بياناته', 'bad'); return; }
     deliver(accMsg(p, f?.fileNumber ?? String(s.itemLabel).replace(/\D/g, ''), s.customerName, s.endDate), s.customerPhone);
-  } else if (s.type === 'code') deliver(fill(S.tpl.code, { name: s.customerName, product: s.productName, code: s.itemLabel }), s.customerPhone);
+  } else if (s.type === 'manual') deliver(`${t('مرحباً')} ${s.customerName} 👋\n${s.productName}${s.itemLabel ? ' · ' + s.itemLabel : ''}`, s.customerPhone);
+  else if (s.type === 'code') deliver(fill(S.tpl.code, { name: s.customerName, product: s.productName, code: s.itemLabel }), s.customerPhone);
   else deliver(fill(S.tpl.number, { name: s.customerName, country: s.country || '', number: s.itemLabel }), s.customerPhone);
 }
 
 /* ================= الأحداث ================= */
 const F = id => S.files.find(f => f.id === id);
 const ACTS = {
+  ...STORE_ACTS,
   tile: id => { const f = F(id); f && fileDetails(f); },
   renew: id => { const f = F(id); f && renew(f); },
   norenew: id => { const f = F(id); f && notRenewed(f); },
@@ -1119,9 +1137,9 @@ const ACTS = {
   delProd: id => { const p = P(id); p && delProduct(p); },
   addCodes: id => { const p = P(id); p && addCodes(p); },
   viewCodes: id => { const p = P(id); p && viewCodes(p); },
-  delCode: async (id, b) => { if (!guardWrite()) return; await deleteDoc(mdoc('codes', id)).catch(e => toast(e.message, 'bad')); b.closest('tr')?.remove(); toast('تم حذف الكود'); },
-  editNum: id => { if (!guardWrite()) return; const n = S.numbers.find(x => x.id === id); n && numberForm(n); },
-  delNum: async id => { if (!guardWrite()) return; const n = S.numbers.find(x => x.id === id); if (n && await confirmBox(`حذف الرقم ${esc(n.number)}؟`, { ok: 'حذف', danger: true })) deleteDoc(mdoc('numbers', id)).then(() => toast('تم الحذف')).catch(e => toast(e.message, 'bad')); },
+  delCode: async (id, b) => { if (!guardWrite()) return; if (S.codes.find(c => c.id === id)?.status === 'reserved') { toast(t('الكود محجوز لطلب في المتجر.'), 'bad'); return; } await deleteDoc(mdoc('codes', id)).catch(e => toast(e.message, 'bad')); b.closest('tr')?.remove(); toast('تم حذف الكود'); },
+  editNum: id => { if (!guardWrite()) return; const n = S.numbers.find(x => x.id === id); if (n?.status === 'reserved') { toast(t('الرقم محجوز لطلب في المتجر.'), 'bad'); return; } n && numberForm(n); },
+  delNum: async id => { if (!guardWrite()) return; const n = S.numbers.find(x => x.id === id); if (n?.status === 'reserved') { toast(t('الرقم محجوز لطلب في المتجر.'), 'bad'); return; } if (n && await confirmBox(`حذف الرقم ${esc(n.number)}؟`, { ok: 'حذف', danger: true })) deleteDoc(mdoc('numbers', id)).then(() => toast('تم الحذف')).catch(e => toast(e.message, 'bad')); },
   ptab: id => { S.f.ptab = id; vProducts(); animate(view); },
   fst: id => { S.f.fst = id; vFiles(); },
   filesOf: id => { S.f.fprod = id; S.f.fst = 'all'; location.hash = '#files'; },
