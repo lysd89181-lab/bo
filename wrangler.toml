@@ -1,0 +1,15 @@
+name = "malafy"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+keep_vars = true
+
+routes = [
+  { pattern = "*.malafy.net/*", zone_name = "malafy.net" }
+]
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true
