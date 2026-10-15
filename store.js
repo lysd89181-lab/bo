@@ -30,6 +30,19 @@ const co = { name: '', phone: '', methodId: '', ref: '', receipt: '' };
 let flash = '';
 let pollT = 0;
 const orders = {}; // id -> view data
+let sess = null;      // حساب الزبون {token, email}
+let mine = null;      // طلبات الحساب من السيرفر
+const login = { step: 1, email: '', busy: false, err: '' };
+let openProb = '';
+const DAYMS = 864e5;
+const daysLeft = end => Math.max(0, Math.ceil((end - Date.now()) / DAYMS));
+const wDays = () => B?.pay?.warrantyDays || 7;
+function warrantyTxt(end, status) {
+  if (!end) return '';
+  if (['refunded', 'rejected', 'cancelled'].includes(status)) return '';
+  const d = daysLeft(end);
+  return d > 0 ? `ضمان ملفي: باقي ${d === 1 ? 'يوم' : d === 2 ? 'يومين' : d + ' أيام'}` : 'انتهى الضمان';
+}
 
 /* ===================== أدوات العرض ===================== */
 function toast(msg, bad) {
@@ -72,8 +85,7 @@ function logoBox() {
   return `<span class="slogo">${src ? `<img src="${esc(src)}" alt="">` : esc((s.name || '؟').trim().charAt(0))}</span>`;
 }
 function top(title, { backable = true } = {}) {
-  const myOrders = LS.get(slugKey('morders'), []).length;
-  const left = `${myOrders && route.n !== 'orders' ? `<a class="ibtn" href="/orders" data-go aria-label="طلباتي">${ic('receipt')}</a>` : ''}
+  const left = `${route.n !== 'orders' && route.n !== 'login' && !PREVIEW ? `<a class="ibtn" href="/orders" data-go aria-label="طلباتي وحسابي">${ic(sess ? 'user' : 'receipt')}</a>` : ''}
     ${route.n !== 'cart' && route.n !== 'checkout' ? `<a class="ibtn" href="/cart" data-go aria-label="السلة">${ic('cart')}${cartCount() ? `<span class="dot">${cartCount()}</span>` : ''}</a>` : ''}`;
   return `<header class="st-top"><div class="wrap">${backable ? `<button class="ibtn" type="button" data-a="back" aria-label="رجوع">${ic('back', 2)}</button><h1>${esc(title)}</h1>` : `<a class="brand" href="/" data-go>${logoBox()}<b>${esc(store().name)}</b></a>`}${left}</div></header>`;
 }
@@ -223,7 +235,8 @@ function checkoutHTML() {
       ${m.receipt !== 'none' ? `<label class="drop" for="coFile">${co.receipt ? `<img src="${esc(co.receipt)}" alt="الإيصال"><span>تم رفع الإيصال. اضغط للتغيير</span>` : `${ic('upload')}<b style="color:var(--s-text)">ارفع صورة الإيصال${m.receipt === 'required' ? '' : ' (اختياري)'}</b><span>صورة واضحة للتحويل</span>`}</label><input type="file" id="coFile" accept="image/*" hidden>` : ''}</div>` : ''}
     <div class="card">${T.lines.map(({ x, l }) => `<div class="line"><span>${esc(x.it.name)}${l.qty > 1 ? ` × ${l.qty}` : ''}</span><b class="num">${money(x.total)}</b></div>`).join('')}
       <div class="line"><span>رسوم الخدمة (${T.rate}%)</span><b class="num">${money(T.fee)}</b></div><div class="line total"><span>الإجمالي</span><b class="num">${money(T.total)}</b></div></div>
-    <div class="safe">${ic('lock')}دفع آمن عبر ملفي. المبلغ ما يوصل للمتجر إلا بعد ما تستلم طلبك.</div>
+    ${sess ? `<div class="note ok">${ic('user')}<span>الطلب ينحفظ في حسابك <b dir="ltr">${esc(sess.email)}</b>، وتلقاه من أي جهاز.</span></div>` : `<div class="note info">${ic('user')}<span>سجّل دخولك بإيميلك (اختياري) باش تلقى طلبك وضمانه من أي جهاز. <a href="/login" data-go style="color:inherit;font-weight:700;text-decoration:underline">تسجيل الدخول</a></span></div>`}
+    <div class="safe">${ic('shield')}كل طلب عليه ضمان ${wDays()} أيام من ملفي بعد التسليم. المبلغ ما يوصل للمتجر إلا بعد ما يخلص الضمان.</div>
     </div><div class="bar"><div class="in"><button class="sbtn" type="button" id="place" data-a="place" ${m && T.ok ? '' : 'disabled'}>${ic('check', 2.2)} تأكيد الطلب · <span class="num">${money(T.total)}</span></button></div></div>`;
 }
 const STATUS = { awaiting: ['بانتظار تأكيد الدفع', 'b-warn'], preparing: ['قيد التجهيز', 'b-info'], delivered: ['تم التسليم', 'b-ok'], completed: ['مكتمل', 'b-ok'], problem: ['بلاغ مفتوح', 'b-bad'], refunded: ['تم إرجاع المبلغ', 'b-off'], rejected: ['مرفوض', 'b-bad'], cancelled: ['ملغي', 'b-off'] };
@@ -240,7 +253,7 @@ function orderHTML(id) {
   const st = STATUS[o.status] || ['—', 'b-off'];
   const ready = o.items.filter(i => i.lines.length);
   const waMsg = `مرحباً، بخصوص طلبي رقم #${o.id}`;
-  const link = `${location.origin}/o/${o.id}#${tokenOf(o.id)}`;
+  const link = `${location.origin}/o/${o.id}${tokenOf(o.id) ? '#' + tokenOf(o.id) : ''}`;
   return `${back}${flash === o.id ? `<div class="done-h"><div class="ok">${ic('check', 2.4)}</div><h2>وصلنا طلبك!</h2><p>رقم الطلب <b class="num" style="color:var(--s-text)">#${esc(o.id)}</b><br>نتأكد من الدفع، وبعدها يوصلك طلبك هنا.</p></div>` : ''}<div class="pad">
     <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px"><b class="num">#${esc(o.id)}</b><span class="badge ${st[1]}">${st[0]}</span></div>
       ${bad ? `<div class="note ${o.status === 'refunded' ? 'info' : 'bad'}" style="margin:0">${ic('alert')}<span>${o.status === 'rejected' ? 'ما قدرناش نأكد الدفع' : o.status === 'cancelled' ? 'تم إلغاء الطلب لأن الدفع ما تأكدش في الوقت' : 'تم إرجاع مبلغ الطلب'}${o.note ? `: ${esc(o.note)}` : ''}${o.resolution?.note ? `: ${esc(o.resolution.note)}` : ''}</span></div>`
@@ -249,9 +262,10 @@ function orderHTML(id) {
     ${ready.length ? `<div class="card"><h3 style="color:var(--s-ok-t)">${ic('check', 2.4).replace('<svg', '<svg style="width:18px;height:18px"')}طلبك جاهز</h3>${ready.map(i => `<div class="codebox"><b>${esc(i.name)}${i.opt ? ` · ${esc(i.opt)}` : ''}</b>${i.lines.map(x => `<div class="cv"><div style="flex:1;min-width:0"><small>${esc(x.l)}</small><code>${esc(x.v)}</code></div><button class="cpb" type="button" data-a="copy" data-v="${esc(x.v)}">${ic('copy')}نسخ</button></div>`).join('')}</div>`).join('')}</div>` : ''}
     ${o.items.some(i => i.status !== 'delivered') && ['preparing', 'problem'].includes(o.status) ? `<div class="note warn">${ic('clock')}<span>${o.items.filter(i => i.status !== 'delivered').map(i => esc(i.name)).join('، ')}: قيد التجهيز عند المتجر.</span></div>` : ''}
     ${o.problem ? `<div class="card"><h3>${ic('alert')}البلاغ</h3><p class="prose">${esc(o.problem.text)}</p>${o.problem.reply ? `<div class="note info" style="margin:12px 0 0">${ic('info')}<span><b>رد المتجر:</b> ${esc(o.problem.reply)}</span></div>` : ''}${o.status === 'problem' ? `<p class="safe">مبلغك محفوظ لين تنحل المشكلة، وفريق ملفي يتابع.</p>` : ''}</div>` : ''}
-    ${o.canReceive || o.canReport ? `<div class="gap" style="margin-bottom:14px">${o.canReceive ? `<button class="sbtn" type="button" data-a="recv">${ic('check', 2.2)} استلمت، كل شي تمام</button>` : ''}
-      ${o.canReport ? `<button class="sbtn ghost" type="button" data-a="showProblem">عندي مشكلة</button><div id="probBox" hidden><div class="fld"><label for="probText">اشرح المشكلة</label><textarea class="inp" id="probText" maxlength="600"></textarea></div><button class="sbtn" type="button" data-a="sendProblem">إرسال البلاغ</button></div>` : ''}
-      ${o.status === 'delivered' && o.autoAt ? `<p class="safe">${ic('clock')}لو ما فيش مشكلة، الطلب يتأكد تلقائياً ${when(o.autoAt)}.</p>` : ''}</div>` : ''}
+    ${o.warrantyEnd && !['refunded', 'rejected', 'cancelled'].includes(o.status) ? `<div class="warr ${daysLeft(o.warrantyEnd) > 0 ? '' : 'over'}">${ic('shield', 2)}<div class="grow"><b>${warrantyTxt(o.warrantyEnd, o.status)}</b><small>${daysLeft(o.warrantyEnd) > 0 ? `الضمان ${o.warrantyDays || wDays()} أيام من التسليم، لين ${when(o.warrantyEnd)}. لو صارت أي مشكلة (مثلاً الحساب تقفل) بلّغ من هنا.` : 'مدة الضمان خلصت.'}</small></div></div>` : ''}
+    ${o.canReceive || o.canReport ? `<div class="gap" style="margin-bottom:14px">
+      ${o.canReport ? `<button class="sbtn ${o.canReceive ? 'ghost' : ''} rep" type="button" data-a="showProblem" ${openProb === o.id ? 'hidden' : ''}>${ic('alert')} إبلاغ عن مشكلة</button><div id="probBox" ${openProb === o.id ? '' : 'hidden'}><div class="fld"><label for="probText">اكتب المشكلة بالتفصيل</label><textarea class="inp" id="probText" maxlength="600" placeholder="مثلاً: الحساب طلب كلمة سر جديدة ووقف"></textarea></div><button class="sbtn" type="button" data-a="sendProblem">إرسال البلاغ</button><p class="safe">البلاغ يوصل للمتجر ولإدارة ملفي، ومبلغك يبقى محفوظ لين تنحل المشكلة.</p></div>` : ''}
+      ${o.canReceive ? `<button class="sbtn ${o.status === 'problem' ? '' : 'ghost'}" type="button" data-a="recv">${ic('check', 2.2)} ${o.status === 'problem' ? 'انحلت المشكلة' : 'استلمت، كل شي تمام'}</button>` : ''}</div>` : ''}
     <div class="card"><h3>تفاصيل الدفع</h3>${o.items.map(i => `<div class="line"><span>${esc(i.name)}${i.opt ? ` · ${esc(i.opt)}` : ''}${i.qty > 1 ? ` × ${i.qty}` : ''}</span><b class="num">${money(i.total, o.currency)}</b></div>`).join('')}
       <div class="line"><span>رسوم الخدمة</span><b class="num">${money(o.fee, o.currency)}</b></div><div class="line total"><span>الإجمالي</span><b class="num">${money(o.total, o.currency)}</b></div>
       ${o.payCurrency === 'USDT' ? `<div class="line"><span>المدفوع</span><b class="num">${money(o.payAmount, 'USDT')}</b></div>` : ''}<div class="line"><span>${esc(o.method)}</span><b dir="auto">${esc(o.reference)}</b></div></div>
@@ -260,8 +274,29 @@ function orderHTML(id) {
     <div class="safe">${ic('shield')}دفع آمن عبر ملفي</div></div>`;
 }
 function ordersHTML() {
-  const list = myOrders();
-  return `${top('طلباتي')}<div class="pad">${list.length ? `<div class="card" style="padding:4px 16px">${list.map(o => { const v = orders[o.id]; const st = v ? STATUS[v.status] : null; return `<a class="ord" href="/o/${esc(o.id)}" data-go><div class="grow"><b class="num">#${esc(o.id)}</b><small>${when(o.at)}</small></div>${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}<b class="num">${money(o.total)}</b></a>`; }).join('')}</div>` : '<div class="empty">ما عندكش طلبات على هذا الجهاز.</div>'}</div>`;
+  const local = myOrders();
+  const rows = new Map();
+  (mine?.orders || []).forEach(o => rows.set(o.id, { id: o.id, at: o.createdAt, total: o.total, cur: o.currency, status: o.status, end: o.warrantyEnd, rep: o.canReport, what: o.items.map(i => i.name).join('، ') }));
+  local.forEach(o => { const v = orders[o.id]; if (!rows.has(o.id)) rows.set(o.id, { id: o.id, at: o.at, total: v?.total ?? o.total, cur: v?.currency, status: v?.status, end: v?.warrantyEnd, rep: v?.canReport, what: v ? v.items.map(i => i.name).join('، ') : '' }); });
+  const list = [...rows.values()].sort((a, b) => (b.at || 0) - (a.at || 0));
+  const acct = sess
+    ? `<div class="card acct"><span class="av">${ic('user', 2)}</span><div class="grow"><small>مسجّل دخول</small><b dir="ltr">${esc(sess.email)}</b></div><button class="ibtn" type="button" data-a="logout" aria-label="تسجيل الخروج">${ic('logout')}</button></div>`
+    : `<div class="card acct"><span class="av">${ic('mail', 2)}</span><div class="grow"><b>تلقى طلباتك من أي جهاز</b><small>سجّل دخولك بإيميلك، وكل طلباتك وضمانها تتجمع في حسابك.</small></div><a class="sbtn sm" href="/login" data-go>دخول</a></div>`;
+  return `${top('طلباتي')}<div class="pad">${acct}
+    ${list.length ? `<div class="card" style="padding:4px 16px">${list.map(o => { const st = o.status ? STATUS[o.status] : null; const w = warrantyTxt(o.end, o.status); return `<a class="ord" href="/o/${esc(o.id)}" data-go><div class="grow"><b class="num">#${esc(o.id)}</b>${o.what ? `<small>${esc(o.what)}</small>` : ''}<small>${when(o.at)}</small>${w ? `<span class="wchip ${daysLeft(o.end) > 0 ? '' : 'over'}">${ic('shield', 2)}${w}</span>` : ''}</div><div class="oside">${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}<b class="num">${money(o.total, o.cur)}</b>${o.rep ? `<span class="repl" data-a="repOpen" data-v="${esc(o.id)}" role="button">إبلاغ</span>` : ''}</div></a>`; }).join('')}</div>`
+      : `<div class="empty">${sess ? 'ما عندكش طلبات في المتجر هذا للحين.' : 'ما عندكش طلبات على هذا الجهاز.'}</div>`}</div>`;
+}
+function loginHTML() {
+  if (sess) { setTimeout(() => go('/orders', true)); return ''; }
+  const L = login;
+  return `${top('تسجيل الدخول')}<div class="pad"><div class="card">
+    <div class="done-h" style="padding:6px 0 14px"><div class="ok">${ic(L.step === 1 ? 'mail' : 'lock', 2)}</div><h2>${L.step === 1 ? 'ادخل بإيميلك' : 'اكتب الكود'}</h2><p>${L.step === 1 ? 'نبعتولك كود من 6 أرقام. ما تحتاجش كلمة سر.' : `بعتنا الكود على <b dir="ltr" style="color:var(--s-text)">${esc(L.email)}</b>. شوف كمان مجلد Spam.`}</p></div>
+    ${L.step === 1 ? `<div class="fld"><label for="lgEmail">الإيميل</label><input class="inp" id="lgEmail" type="email" dir="ltr" autocomplete="email" inputmode="email" value="${esc(L.email)}" placeholder="name@gmail.com"></div>`
+      : `<div class="fld"><label for="lgCode">الكود</label><input class="inp codein" id="lgCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" dir="ltr" placeholder="••••••"></div>`}
+    ${L.err ? `<div class="note bad">${ic('alert')}<span>${esc(L.err)}</span></div>` : ''}
+    <button class="sbtn" type="button" data-a="${L.step === 1 ? 'lgSend' : 'lgVerify'}" ${L.busy ? 'disabled' : ''}>${L.step === 1 ? 'ابعتلي الكود' : 'دخول'}</button>
+    ${L.step === 2 ? `<button class="sbtn ghost" style="margin-top:10px" type="button" data-a="lgBack">غيّر الإيميل أو ابعت كود جديد</button>` : ''}
+  </div><div class="safe">${ic('shield')}حسابك يجمع طلباتك وضمانها من أي جهاز</div></div>`;
 }
 const notFoundHTML = () => `${top('غير موجود')}<div class="done-h"><div class="ok muted">${ic('search')}</div><h2>الصفحة مش موجودة</h2><p>يمكن المنتج انحذف أو الرابط غلط.</p></div><div class="pad"><a class="sbtn" href="/" data-go>الرجوع للمتجر</a></div>`;
 function closedHTML() {
@@ -279,6 +314,7 @@ function parse(path) {
   if (/^\/cart\/?$/.test(path)) return { n: 'cart' };
   if (/^\/checkout\/?$/.test(path)) return { n: 'checkout' };
   if (/^\/orders\/?$/.test(path)) return { n: 'orders' };
+  if (/^\/login\/?$/.test(path)) return { n: 'login' };
   if (path === '/' || path === '') return { n: 'home' };
   return { n: 'nf' };
 }
@@ -295,7 +331,7 @@ function render(toTop) {
   clearTimeout(pollT);
   const s = store();
   let html;
-  if (!s.open && !['order', 'orders'].includes(route.n)) html = closedHTML();
+  if (!s.open && !['order', 'orders', 'login'].includes(route.n)) html = closedHTML();
   else if (route.n === 'home') html = homeHTML();
   else if (route.n === 'cat') html = catHTML(route.id);
   else if (route.n === 'prod') html = prodHTML(route.id);
@@ -303,6 +339,7 @@ function render(toTop) {
   else if (route.n === 'checkout') html = checkoutHTML();
   else if (route.n === 'order') { html = orderHTML(route.id); loadOrder(route.id); }
   else if (route.n === 'orders') { html = ordersHTML(); loadOrderList(); }
+  else if (route.n === 'login') html = loginHTML();
   else html = notFoundHTML();
   app.innerHTML = (PREVIEW ? '<span class="preview-tag">معاينة</span>' : '') + html;
   bindPage();
@@ -313,6 +350,8 @@ function bindPage() {
   $$('[data-in]', app).forEach(el => el.oninput = () => { const it = item(route.id); if (it) selOf(it).input[+el.dataset.in] = el.value.trim(); });
   const bindCo = (id, k) => { const el = $('#' + id, app); if (el) el.oninput = () => { co[k] = el.value; if (k === 'name' || k === 'phone') LS.set('mcust', { name: co.name, phone: co.phone }); }; };
   bindCo('coName', 'name'); bindCo('coPhone', 'phone'); bindCo('coRef', 'ref');
+  const le = $('#lgEmail', app); if (le) { le.oninput = () => { login.email = le.value.trim(); }; le.onkeydown = e => { if (e.key === 'Enter') ACT.lgSend(); }; setTimeout(() => le.focus(), 50); }
+  const lc = $('#lgCode', app); if (lc) { lc.oninput = () => { lc.value = lc.value.replace(/\D/g, '').slice(0, 6); if (lc.value.length === 6) ACT.lgVerify(); }; setTimeout(() => lc.focus(), 50); }
   const f = $('#coFile', app);
   if (f) f.onchange = async () => { const file = f.files[0]; f.value = ''; if (!file) return; try { co.receipt = await compress(file); render(false); } catch (e) { toast(e.message, true); } };
 }
@@ -344,8 +383,9 @@ async function compress(file) {
 
 /* ===================== الشبكة ===================== */
 async function api(path, { method = 'GET', body, token } = {}) {
-  const r = await fetch(path, { method, headers: { 'content-type': 'application/json', ...(token ? { 'x-order-token': token } : {}) }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+  const r = await fetch(path, { method, headers: { 'content-type': 'application/json', ...(token ? { 'x-order-token': token } : {}), ...(sess?.token ? { 'x-customer': sess.token } : {}) }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
   let j = {}; try { j = await r.json(); } catch { }
+  if (r.status === 401 && sess && /^\/api\/(my|me)/.test(path)) { setSess(null); }
   if (!r.ok) { const e = new Error(j.error || 'صار خطأ، جرّب مرة ثانية.'); e.status = r.status; e.data = j; throw e; }
   return j;
 }
@@ -353,7 +393,7 @@ async function refreshCatalog() { try { B = await api('/api/store'); applyTheme(
 async function loadOrder(id) {
   if (PREVIEW) { if (orders[id] === undefined) { orders[id] = null; } return; }
   const t = tokenOf(id);
-  if (!t) { if (orders[id] === undefined) { orders[id] = null; setTimeout(() => route.n === 'order' && route.id === id && render(false)); } return; }
+  if (!t && !sess) { if (orders[id] === undefined) { orders[id] = null; setTimeout(() => route.n === 'order' && route.id === id && render(false)); } return; }
   try {
     const o = await api('/api/orders/' + id, { token: t });
     const changed = JSON.stringify(orders[id]) !== JSON.stringify(o);
@@ -369,7 +409,10 @@ async function loadOrder(id) {
 let listLoaded = false;
 async function loadOrderList() {
   if (PREVIEW || listLoaded) return; listLoaded = true;
-  await Promise.all(myOrders().slice(0, 10).map(async o => { try { orders[o.id] = await api('/api/orders/' + o.id, { token: o.t }); } catch { } }));
+  await Promise.all([
+    sess ? api('/api/my/orders').then(j => { mine = j; }).catch(() => {}) : null,
+    ...myOrders().slice(0, 10).map(async o => { try { orders[o.id] = await api('/api/orders/' + o.id, { token: o.t }); } catch { } })
+  ]);
   if (route.n === 'orders') render(false);
 }
 function saveTokenFromHash(r, hash) {
@@ -424,7 +467,7 @@ async function orderAction(kind) {
   try {
     if (kind === 'recv') orders[id] = await api(`/api/orders/${id}/received`, { method: 'POST', body: {}, token: t });
     else { const text = ($('#probText')?.value || '').trim(); if (text.length < 5) { toast('اشرح المشكلة باختصار.', true); return; } orders[id] = await api(`/api/orders/${id}/problem`, { method: 'POST', body: { text }, token: t }); }
-    toast(kind === 'recv' ? 'شكراً! تم تأكيد الاستلام' : 'تم إرسال البلاغ'); flash = ''; render(false);
+    toast(kind === 'recv' ? 'شكراً! سجّلنا إن كل شي تمام' : 'تم إرسال البلاغ للمتجر ولإدارة ملفي'); flash = ''; openProb = ''; render(false);
   } catch (e) { toast(e.message, true); loadOrder(id); }
 }
 const ACT = {
@@ -442,8 +485,35 @@ const ACT = {
   place: (v, b) => place(b),
   recv: () => orderAction('recv'),
   showProblem: (v, b) => { $('#probBox').hidden = false; b.hidden = true; $('#probText').focus(); },
-  sendProblem: () => orderAction('problem')
+  sendProblem: () => orderAction('problem'),
+  repOpen: v => { openProb = v; go('/o/' + v); },
+  lgSend: async () => {
+    const em = (login.email || $('#lgEmail')?.value || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { login.err = 'اكتب إيميل صحيح.'; render(false); return; }
+    login.email = em; login.busy = true; login.err = ''; render(false);
+    try { await api('/api/auth/send', { method: 'POST', body: { email: em } }); login.step = 2; }
+    catch (e) { login.err = e.message; }
+    login.busy = false; render(false);
+  },
+  lgVerify: async () => {
+    const code = ($('#lgCode')?.value || '').trim();
+    if (!/^\d{6}$/.test(code)) { login.err = 'اكتب الكود كامل (6 أرقام).'; render(false); return; }
+    if (login.busy) return;
+    login.busy = true; login.err = ''; render(false);
+    try {
+      const r = await api('/api/auth/verify', { method: 'POST', body: { email: login.email, code } });
+      setSess({ token: r.token, email: r.email });
+      const local = myOrders().map(o => ({ id: o.id, token: o.t })).slice(0, 20);
+      if (local.length) await api('/api/my/claim', { method: 'POST', body: { orders: local } }).catch(() => {});
+      Object.assign(login, { step: 1, busy: false, err: '' }); listLoaded = false; mine = null;
+      toast('أهلاً بيك! تم تسجيل الدخول');
+      go('/orders', true);
+    } catch (e) { login.busy = false; login.err = e.message; render(false); }
+  },
+  lgBack: () => { Object.assign(login, { step: 1, err: '' }); render(false); },
+  logout: async () => { try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch { } setSess(null); mine = null; listLoaded = false; toast('تم تسجيل الخروج'); render(false); }
 };
+function setSess(v) { sess = v; try { v ? localStorage.setItem(slugKey('msess'), JSON.stringify(v)) : localStorage.removeItem(slugKey('msess')); } catch { } }
 document.addEventListener('click', e => {
   const a = e.target.closest('[data-a]');
   if (a && app.contains(a)) { e.preventDefault(); e.stopPropagation(); if (!a.disabled) ACT[a.dataset.a]?.(a.dataset.v, a); return; }
@@ -457,6 +527,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && ro
 function start() {
   cart = LS.get(slugKey('mcart'), []).filter(l => l && typeof l.itemId === 'string' && l.qty > 0).map(l => ({ ...l, qty: Math.min(10, Math.floor(l.qty)) }));
   const c = LS.get('mcust', {}); co.name = c.name || ''; co.phone = c.phone || '';
+  if (!PREVIEW) { const ss = LS.get(slugKey('msess'), null); sess = ss && typeof ss.token === 'string' && /^[A-Za-z0-9]{32,64}$/.test(ss.token) ? { token: ss.token, email: String(ss.email || '') } : null; }
   applyTheme();
   render(false);
 }

@@ -14,6 +14,7 @@ const M = {
 const CUR = { LYD: ['د.ل', 'دينار ليبي'], SAR: ['ر.س', 'ريال سعودي'] };
 const sym = () => CUR[M.store?.currency]?.[0] || 'د.ل';
 const money = (n, s = sym()) => `⁦${(Math.round((+n || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })} ${esc(s)}⁩`;
+const wDays = () => Math.min(30, Math.max(1, Math.floor(+A?.S?.platform?.warrantyDays) || 7));
 const round2 = n => Math.round((+n || 0) * 100) / 100;
 const uid = () => A.uid();
 const sref = () => doc(db, 'stores', uid());
@@ -229,6 +230,7 @@ async function orderDetails(o) {
   const m = modal(`${t('طلب')} #${esc(o.id)}`, `
     <div class="row" style="margin-bottom:14px"><span class="badge ${st[0]}">${t(st[1])}</span><span class="spacer"></span><small class="dim">${fmtDate(o.createdAt)} · ${ago(o.createdAt)}</small></div>
     <div class="summary"><div><span>${t('الزبون')}</span><b data-raw>${esc(o.customer?.name)}</b></div><div><span>${t('واتساب')}</span><b class="ltr" data-raw>${esc(o.customer?.phone)}</b></div></div>
+    ${o.deliveredAt && ['delivered', 'problem'].includes(o.status) ? `<p class="hint" style="margin-bottom:14px">${icon('shield')} ${Date.now() < o.deliveredAt + wDays() * DAY ? `${t('الضمان شغال لين')} ${fmtDate(o.deliveredAt + wDays() * DAY)}${o.received ? ' · ' + t('الزبون أكد إن كل شي تمام') : ''}` : t('الضمان انتهى')}</p>` : ''}
     ${o.status === 'awaiting' ? `<p class="hint" style="margin-bottom:14px">${t('بانتظار تأكيد الدفع من ملفي. ما تسلّمش حاجة قبل التأكيد.')}</p>` : ''}
     ${o.problem ? `<div class="card" style="padding:14px;margin-bottom:14px;border-color:rgba(239,68,68,.4)"><b class="t-bad">${icon('alert')} ${o.problem.by === 'system' ? t('ملاحظة النظام') : t('بلاغ الزبون')}</b><p data-raw style="margin:6px 0">${esc(o.problem.text)}</p>
       ${o.problem.reply ? `<p class="small muted">${t('ردك')}: <span data-raw>${esc(o.problem.reply)}</span></p>` : ''}
@@ -525,13 +527,14 @@ async function closeEditor(saved) {
 function walletView() {
   const w = M.wallet || {}, s = M.store;
   const ns = w.nextSettle || (() => { const b = s.launchedAt || Date.now(); let d = b + 7 * DAY; while (d <= Date.now()) d += 7 * DAY; return d; })();
-  const LT = { hold: ['طلب مدفوع (معلّق)', ''], release: ['تأكد الاستلام', 'pos'], refund: ['إرجاع للزبون', 'neg'], payout: ['تسوية (قيد التحويل)', 'neg'], paid: ['تم التحويل', ''] };
+  const LT = { hold: ['طلب مدفوع (معلّق)', ''], release: ['انتهى الضمان', 'pos'], refund: ['إرجاع للزبون', 'neg'], payout: ['تسوية (قيد التحويل)', 'neg'], paid: ['تم التحويل', ''] };
   A.view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('المحفظة')}</h1><p>${t('الأسعار اللي تحطها توصلك كاملة، رسوم الخدمة يدفعها الزبون')}</p></div></div>
   ${subnav('wallet')}
   <section class="card glow rv wal" style="margin-bottom:16px"><small class="muted">${t('قابل للسحب')}</small><div class="wbig num t-ok">${money(w.available)}</div>
     <div class="row small"><span class="muted">${t('التسوية القادمة')}:</span><b>${fmtDate(ns)}</b><span class="badge info">${t('تلقائياً كل 7 أيام')}</span></div></section>
-  <div class="kv rv" style="margin-bottom:16px"><div><small>${t('معلّق لين الاستلام')}</small><b class="num">${money(w.pending)}</b></div><div><small>${t('قيد التحويل')}</small><b class="num">${money(w.inPayout)}</b></div><div><small>${t('تم تحويله')}</small><b class="num">${money(w.withdrawn)}</b></div></div>
+  <div class="kv rv" style="margin-bottom:16px"><div><small>${t('معلّق (فترة الضمان)')}</small><b class="num">${money(w.pending)}</b></div><div><small>${t('قيد التحويل')}</small><b class="num">${money(w.inPayout)}</b></div><div><small>${t('تم تحويله')}</small><b class="num">${money(w.withdrawn)}</b></div></div>
+  <p class="hint rv" style="margin:-6px 0 16px">${icon('shield')} ${t('كل طلب عليه ضمان')} ${wDays()} ${t('أيام من ملفي بعد التسليم. لو الزبون ما بلّغش على مشكلة، أرباح الطلب تصير قابلة للسحب بعد ما يخلص الضمان.')}</p>
   ${M.priv?.payout?.details ? '' : `<div class="card rv" style="margin-bottom:16px;border-color:rgba(245,158,11,.45)"><p>${icon('alert')} ${t('حدد وين تبي توصلك أرباحك')} <a class="link" href="#store/settings">${t('من الإعدادات')}</a></p></div>`}
   <section class="card rv" style="margin-bottom:16px"><div class="chead"><h2>${t('التسويات')}</h2></div>
     ${M.payouts.length ? `<div class="oplist">${M.payouts.map(p => `<div class="op"><div><b class="num">${money(p.amount)}</b><small>${fmtDate(p.createdAt)}${p.reference ? ` · <span data-raw>${esc(p.reference)}</span>` : ''}</small></div><div class="opr"><span class="badge ${p.status === 'paid' ? 'ok' : 'warn'}">${t(p.status === 'paid' ? 'تم التحويل' : 'قيد التحويل')}</span></div></div>`).join('')}</div>` : empty('wallet', t('ما فيش تسويات للحين.'))}</section>

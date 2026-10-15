@@ -637,3 +637,14 @@ td .price{color:var(--amber-t);font-weight:600}
 .catl{grid-template-columns:auto minmax(0,1fr) auto}
 .catl .catacts{gap:4px;flex-wrap:nowrap}
 @media (max-width:480px){.catl{grid-template-columns:auto minmax(0,1fr)}.catl .catacts{grid-column:1/-1;justify-content:flex-end}}
+
+/* ===== v9: تعريف المنصة في صفحة الدخول (للبحث) ===== */
+.seo{max-width:980px;margin:0 auto;padding:36px 20px 48px;color:var(--muted);line-height:1.9}
+.seo h2{font-size:20px;color:var(--text);margin-bottom:8px}
+.seo>p{font-size:14px;margin-bottom:18px}
+.seo b{color:var(--text);font-weight:600}
+.seo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px}
+.seo-grid>div{padding:16px;border:1px solid var(--line);border-radius:16px;background:rgb(var(--deep) / .35)}
+.seo-grid h3{font-size:15px;color:var(--text);margin-bottom:4px}
+.seo-grid p{font-size:13px}
+.seo-foot{font-size:12px;text-align:center;opacity:.8}

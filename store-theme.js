@@ -64,6 +64,7 @@ export function storeTokens(design) {
 export const fontHref = f => `https://fonts.googleapis.com/css2?family=${encodeURIComponent(f).replace(/%20/g, '+')}:wght@400;500;600;700&display=swap`;
 
 export const PATHS = {
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>', logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/>',
   back: '<path d="M9 6l6 6-6 6"/>', cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2.5 3h3l2.4 12.2a1.5 1.5 0 0 0 1.5 1.2h8.4a1.5 1.5 0 0 0 1.5-1.1L21 8H6.3"/>',
   tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M10 9l4 2-4 2z"/>', pad: '<path d="M7 9h4M9 7v4M15 10h.01M17.5 8.5h.01"/><path d="M6.5 5h11A4.5 4.5 0 0 1 22 9.5v4A4.5 4.5 0 0 1 17.5 18c-1.4 0-2.3-.7-3-1.6l-.6-.8H10l-.6.8C8.8 17.3 7.9 18 6.5 18A4.5 4.5 0 0 1 2 13.5v-4A4.5 4.5 0 0 1 6.5 5Z"/>',
   gem: '<path d="M6 3h12l4 6-10 12L2 9z"/><path d="M2 9h20M12 21 8 9l4-6 4 6z"/>', card: '<rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 15h3"/>',

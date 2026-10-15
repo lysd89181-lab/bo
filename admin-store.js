@@ -176,7 +176,7 @@ export function storeSettingsHTML(pf) {
     ${['LYD', 'SAR'].map(c => `<div class="lbl" style="margin-top:6px">${t(c === 'LYD' ? 'شرائح الدينار الليبي' : 'شرائح الريال السعودي')} <span class="dim">(${t('أقل من المبلغ ← النسبة %')})</span></div><div data-fees="${c}">${fees(c).map(f => row(c, f)).join('')}</div><button type="button" class="btn ghost sm" data-addfee="${c}" style="margin-bottom:14px">${icon('plus')} ${t('شريحة')}</button>`).join('')}
     <div class="grid2"><div class="field"><label>${t('سعر USDT بالدينار (1 USDT = ؟ د.ل)')}</label><input id="gsRL" inputmode="decimal" dir="ltr" value="${pf.usdtRate?.LYD ?? ''}"></div><div class="field"><label>${t('سعر USDT بالريال (1 USDT = ؟ ر.س)')}</label><input id="gsRS" inputmode="decimal" dir="ltr" value="${pf.usdtRate?.SAR ?? ''}"></div></div>
     <p class="hint" style="margin:-6px 0 14px">${t('فاضي = USDT ما يظهرش في المتاجر بهذي العملة')}</p>
-    <div class="grid2"><div class="field"><label>${t('التأكيد التلقائي بعد التسليم (ساعة)')}</label><input id="gsCH" type="number" min="1" max="168" dir="ltr" value="${pf.completeHours || 24}"></div><div class="field"><label>${t('إلغاء الطلب لو الدفع ما تأكدش خلال (ساعة)')}</label><input id="gsAH" type="number" min="1" max="168" dir="ltr" value="${pf.awaitHours || 24}"></div></div>
+    <div class="grid2"><div class="field"><label>${t('مدة الضمان بعد التسليم (أيام)')}</label><input id="gsWD" type="number" min="1" max="30" dir="ltr" value="${pf.warrantyDays || 7}"><span class="hint">${t('الزبون يقدر يبلّغ طول المدة هذي، وأرباح التاجر تتحول بعد ما تخلص.')}</span></div><div class="field"><label>${t('إلغاء الطلب لو الدفع ما تأكدش خلال (ساعة)')}</label><input id="gsAH" type="number" min="1" max="168" dir="ltr" value="${pf.awaitHours || 24}"></div></div>
     <label class="row" style="margin-bottom:16px"><span class="toggle"><input type="checkbox" id="gsTS" ${pf.trialStore ? 'checked' : ''}><span></span></span><span><b>${t('المتجر متاح في التجربة المجانية')}</b></span></label>
     <button class="btn amber" id="gsStoreSave">${t('حفظ إعدادات المتاجر')}</button></section>`;
 }
@@ -197,7 +197,7 @@ export function bindStoreSettings(save) {
       storeFees[c] = tiers.sort((a, b) => (a.upTo || Infinity) - (b.upTo || Infinity)).slice(0, 8);
     }
     const rate = v => { const n = num(v); return n > 0 ? n : 0; };
-    await save({ storeFees, usdtRate: { LYD: rate($('#gsRL').value), SAR: rate($('#gsRS').value) }, completeHours: Math.min(168, Math.max(1, Math.floor(num($('#gsCH').value)) || 24)), awaitHours: Math.min(168, Math.max(1, Math.floor(num($('#gsAH').value)) || 24)), trialStore: $('#gsTS').checked });
+    await save({ storeFees, usdtRate: { LYD: rate($('#gsRL').value), SAR: rate($('#gsRS').value) }, warrantyDays: Math.min(30, Math.max(1, Math.floor(num($('#gsWD').value)) || 7)), awaitHours: Math.min(168, Math.max(1, Math.floor(num($('#gsAH').value)) || 24)), trialStore: $('#gsTS').checked });
     toast(t('تم الحفظ'));
   });
 }

@@ -229,3 +229,25 @@ textarea.inp{height:96px;padding:12px 14px;resize:vertical}
 .closed p{color:var(--s-muted);margin:0 0 18px;line-height:1.8}
 .ltr{direction:ltr;unicode-bidi:isolate}
 .preview-tag{position:fixed;top:8px;inset-inline-start:8px;z-index:70;background:rgba(0,0,0,.6);color:#fff;font-size:11px;padding:3px 8px;border-radius:8px;font-family:system-ui;pointer-events:none}
+
+/* ===== v9: الضمان وحساب الزبون ===== */
+.warr{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;margin-bottom:14px;border-radius:var(--s-r);background:color-mix(in srgb,#16A34A 12%,transparent);border:1px solid color-mix(in srgb,#16A34A 35%,transparent);color:var(--s-ok-t)}
+.warr svg{width:22px;height:22px;flex:none;margin-top:1px}
+.warr b{display:block;font-size:15px}
+.warr small{display:block;color:var(--s-muted);font-size:12.5px;line-height:1.7;margin-top:3px}
+.warr.over{background:color-mix(in srgb,var(--s-muted) 10%,transparent);border-color:var(--s-line);color:var(--s-muted)}
+.wchip{display:inline-flex;align-items:center;gap:4px;margin-top:5px;font-size:11.5px;font-weight:700;color:var(--s-ok-t)}
+.wchip svg{width:13px;height:13px}
+.wchip.over{color:var(--s-muted);font-weight:500}
+.oside{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}
+.repl{display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:700;background:color-mix(in srgb,#DC2626 14%,transparent);color:var(--s-bad-t);cursor:pointer}
+.acct{display:flex;align-items:center;gap:12px}
+.acct .grow{flex:1;min-width:0}
+.acct .grow b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct .grow small{display:block;color:var(--s-muted);font-size:12.5px;line-height:1.6}
+.acct .av{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;flex:none;background:color-mix(in srgb,var(--s-pri) 16%,transparent);color:var(--s-pri-t)}
+.acct .av svg{width:22px;height:22px}
+.sbtn.sm{width:auto;height:40px;padding:0 18px;font-size:14px;flex:none}
+.sbtn.rep svg{width:18px;height:18px}
+.codein{font-size:26px!important;letter-spacing:12px;text-align:center;font-weight:700}
+.card h3 svg{width:18px;height:18px;flex:none}

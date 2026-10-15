@@ -379,11 +379,13 @@ async function catalog(fs, slug) {
     return {
       store: pubStore(ctx),
       items: items.filter(i => i.active !== false).map(pubItem).filter(Boolean).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name)),
-      pay: { methods, fees: (ctx.platform.storeFees?.[cur] || DEFAULT_FEES).map(t => ({ upTo: num(t.upTo), rate: num(t.rate) })), completeHours: completeHours(ctx.platform) }
+      pay: { methods, fees: (ctx.platform.storeFees?.[cur] || DEFAULT_FEES).map(t => ({ upTo: num(t.upTo), rate: num(t.rate) })), completeHours: completeHours(ctx.platform), warrantyDays: warrantyDays(ctx.platform) }
     };
   });
 }
-const completeHours = p => Math.min(168, Math.max(1, int(p?.completeHours) || 24));
+// مدة الضمان: الفلوس تبقى معلّقة والزبون يقدر يبلّغ طول المدة هذي بعد التسليم
+const warrantyDays = p => Math.min(30, Math.max(1, int(p?.warrantyDays) || 7));
+const completeHours = p => warrantyDays(p) * 24;
 const awaitHours = p => Math.min(168, Math.max(1, int(p?.awaitHours) || 24));
 async function purgeStore(slug) { forget('cat:' + slug); forget('ctx:' + slug); }
 
@@ -441,6 +443,7 @@ async function createOrder(req, env, fs, slug, ectx) {
     if (same) same.qty = Math.min(10, same.qty + qty); else merged.push({ itemId, opt, numberId, input, qty });
   }
 
+  const cust = await customerOf(fs, req);
   const now = Date.now();
   const token = randomStr(28, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789');
   const tokenHash = await sha256hex(token);
@@ -535,6 +538,7 @@ async function createOrder(req, env, fs, slug, ectx) {
       expireAt: now + awaitHours(platform) * 3600e3, autoAt: null,
       tokenHash, ipHash, log: [{ s: 'awaiting', at: now }]
     };
+    if (cust) { order.customerKey = cust.key; order.customerEmail = cust.email; }
     for (const r of reserved) W.push(fs.wUpdate(`merchants/${sid}/${r.c}/${r.id}`, { status: 'reserved', reservedBy: oid, reservedAt: now }));
     for (const [itemId, t] of Object.entries(touch)) {
       const it = items[itemId]; const upd = { stock: Math.max(0, int(it.stock) - t.n) };
@@ -558,7 +562,9 @@ async function orderForCustomer(req, fs, slug, id) {
   if (!ID_RE.test(id)) throw new HttpError(404, 'الطلب مش موجود.');
   const tok = req.headers.get('x-order-token') || '';
   const o = await fs.get(`orders/${id}`);
-  if (!o || !tok || !safeEq(await sha256hex(tok), o.tokenHash)) throw new HttpError(404, 'الطلب مش موجود أو الرابط ناقص.');
+  let ok = !!(o && tok && safeEq(await sha256hex(tok), o.tokenHash));
+  if (o && !ok && o.customerKey) { const c = await customerOf(fs, req); ok = !!c && c.key === o.customerKey; }
+  if (!ok) throw new HttpError(404, 'الطلب مش موجود أو الرابط ناقص.');
   // الطلب لازم يكون من نفس المتجر (حتى لو التاجر غيّر رابطه بعد الطلب)
   if (o.slug !== slug && (await storeCtx(fs, slug))?.sid !== o.storeId) throw new HttpError(404, 'الطلب مش موجود أو الرابط ناقص.');
   return o;
@@ -581,8 +587,10 @@ async function customerView(fs, o, slug) {
     problem: o.problem ? { text: o.problem.text, reply: o.problem.reply || '', at: o.problem.at } : null,
     resolution: o.resolution ? { action: o.resolution.action, note: o.resolution.note || '' } : null,
     autoAt: o.status === 'delivered' ? (o.autoAt || (o.deliveredAt + ch)) : 0,
-    canReceive: ['delivered', 'problem'].includes(o.status),
+    warrantyDays: warrantyDays(p), warrantyEnd: o.deliveredAt ? num(o.deliveredAt) + ch : 0, received: !!o.received,
+    canReceive: (o.status === 'delivered' && !o.received) || o.status === 'problem',
     canReport: o.status === 'preparing' || (o.status === 'delivered' && Date.now() < (o.deliveredAt || 0) + ch),
+    account: !!o.customerKey,
     store: { name: ctx?.store?.name || o.storeName, whatsapp: normPhone(ctx?.store?.info?.whatsapp, o.country) }
   };
 }
@@ -931,7 +939,7 @@ function mailHTML({ title, intro, code, button, note }) {
 <body style="margin:0;padding:0;background:#EEF0F5;font-family:Tahoma,Arial,sans-serif;direction:rtl">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF0F5;padding:28px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2E5EE">
-<tr><td style="background:#070B19;padding:22px 26px;text-align:right"><span style="display:inline-block;width:34px;height:34px;line-height:34px;text-align:center;border-radius:10px;background:#F59E0B;color:#1A1205;font-weight:bold;font-size:18px;vertical-align:middle">م</span>
+<tr><td style="background:#070B19;padding:20px 26px;text-align:right"><img src="https://malafy.net/icon-192.png" width="40" height="40" alt="ملفي" style="display:inline-block;width:40px;height:40px;border-radius:11px;vertical-align:middle;border:0">
 <span style="color:#ffffff;font-size:20px;font-weight:bold;vertical-align:middle;margin-right:8px">ملفي</span></td></tr>
 <tr><td style="padding:30px 26px 10px;text-align:right">
 <h1 style="margin:0 0 12px;font-size:21px;color:#141829">${e(title)}</h1>
@@ -953,7 +961,7 @@ async function sendMail(env, to, subject, html) {
 /* ===================== أكواد التحقق (6 أرقام) ===================== */
 const code6 = () => { const b = new Uint32Array(1); let n; do { crypto.getRandomValues(b); n = b[0]; } while (n >= 4294000000); return String(n % 1000000).padStart(6, '0'); };
 const codeHash = (fs, code, key) => sha256hex(`${code}|${key}|${fs.sa.private_key_id || fs.pid}`);
-async function issueCode(fs, env, key, email, kind) {
+async function issueCode(fs, env, key, email, kind, extra = {}) {
   const now = Date.now();
   const d = await fs.get(`authCodes/${key}`);
   const recent = (d?.sends || []).filter(t => now - t < 3600e3);
@@ -961,12 +969,12 @@ async function issueCode(fs, env, key, email, kind) {
   if (recent.length >= 5) throw new HttpError(429, 'طلبت أكواد كثيرة، جرّب بعد ساعة.');
   const code = code6();
   await fs.commit([fs.wSet(`authCodes/${key}`, { hash: await codeHash(fs, code, key), exp: now + 10 * 60e3, tries: 0, sentAt: now, sends: [...recent, now].slice(-5), kind })]);
-  const verify = kind === 'verify';
-  await sendMail(env, email, verify ? `${code} كود تأكيد إيميلك في ملفي` : `${code} كود استرجاع كلمة المرور`, mailHTML({
-    title: verify ? 'أكّد إيميلك' : 'استرجاع كلمة المرور',
-    intro: verify ? 'أهلاً بيك في ملفي! استعمل الكود هذا باش تأكد إيميلك وتكمل تفعيل حسابك:' : 'وصلنا طلب لتغيير كلمة المرور لحسابك في ملفي. استعمل الكود هذا:',
-    code, note: 'الكود صالح لمدة 10 دقائق، وما تشاركهوش مع أي حد، حتى لو قال إنه من ملفي.'
-  }));
+  const T = {
+    verify: [`${code} كود تأكيد إيميلك في ملفي`, 'أكّد إيميلك', 'أهلاً بيك في ملفي! استعمل الكود هذا باش تأكد إيميلك وتكمل تفعيل حسابك:'],
+    reset: [`${code} كود استرجاع كلمة المرور`, 'استرجاع كلمة المرور', 'وصلنا طلب لتغيير كلمة المرور لحسابك في ملفي. استعمل الكود هذا:'],
+    login: [`${code} كود الدخول لمتجر ${extra.store || ''}`, `الدخول لمتجر ${extra.store || ''}`, 'استعمل الكود هذا باش تدخل لحسابك وتشوف طلباتك وضمانها من أي جهاز:']
+  }[kind] || [];
+  await sendMail(env, email, T[0], mailHTML({ title: T[1], intro: T[2], code, note: 'الكود صالح لمدة 10 دقائق، وما تشاركهوش مع أي حد، حتى لو قال إنه من ملفي.' }));
 }
 async function checkCode(fs, key, code) {
   const d = await fs.get(`authCodes/${key}`);
@@ -1320,6 +1328,83 @@ async function cached(req, ctx, fn) {
 }
 
 /* ===================== التوجيه ===================== */
+/* ===================== حساب الزبون في المتجر (إيميل + كود) ===================== */
+const CUST_TTL = 90 * DAY;
+const custKey = async email => (await sha256hex('cust|' + email)).slice(0, 32);
+async function customerOf(fs, req) {
+  const t = req.headers.get('x-customer') || '';
+  if (!/^[A-Za-z0-9]{32,64}$/.test(t)) return null;
+  const s = await fs.get(`custSessions/${await sha256hex(t)}`);
+  if (!s || num(s.exp) < Date.now()) return null;
+  return { email: s.email, key: s.key };
+}
+const ipSends = new Map();   // حد بسيط لكل IP داخل نفس النسخة
+function ipLimit(req, max = 8) {
+  const ip = req.headers.get('cf-connecting-ip') || 'x', now = Date.now();
+  const l = (ipSends.get(ip) || []).filter(t => now - t < 3600e3);
+  if (l.length >= max) throw new HttpError(429, 'طلبت أكواد كثيرة، جرّب بعد شوية.');
+  l.push(now); ipSends.set(ip, l);
+  if (ipSends.size > 5000) ipSends.clear();
+}
+const SUMMARY_FIELDS = ['storeId', 'status', 'createdAt', 'deliveredAt', 'total', 'subtotal', 'fee', 'currency', 'items', 'problem', 'received'];
+async function customerRoute(req, env, fs, slug, p, method) {
+  const ctx = await storeCtx(fs, slug);
+  if (!ctx) throw new HttpError(404, 'المتجر مش موجود.');
+  if (method !== 'GET' && method !== 'POST') throw new HttpError(405, 'غير مسموح.');
+  const body = method === 'POST' ? await readJson(req, 8000) : {};
+  if (p === '/api/auth/send') {
+    const email = normEmail(body.email);
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'اكتب إيميل صحيح.');
+    ipLimit(req);
+    await issueCode(fs, env, 'l_' + await custKey(email), email, 'login', { store: clean(ctx.store.name, 40) });
+    return json({ ok: true });
+  }
+  if (p === '/api/auth/verify') {
+    const email = normEmail(body.email);
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'اكتب إيميل صحيح.');
+    const key = await custKey(email);
+    await checkCode(fs, 'l_' + key, body.code);
+    const token = randomStr(40, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789'), now = Date.now();
+    await fs.commit([fs.wSet(`custSessions/${await sha256hex(token)}`, { email, key, exp: now + CUST_TTL, at: now })]);
+    return json({ ok: true, token, email });
+  }
+  const tok = req.headers.get('x-customer') || '';
+  const c = await customerOf(fs, req);
+  if (p === '/api/auth/logout') {
+    if (c) await fs.commit([fs.wDelete(`custSessions/${await sha256hex(tok)}`)]);
+    return json({ ok: true });
+  }
+  if (!c) throw new HttpError(401, 'سجّل دخولك من جديد.');
+  if (p === '/api/me') return json({ email: c.email });
+  if (p === '/api/my/orders') {
+    const list = await fs.query('orders', [['customerKey', '==', c.key]], { limit: 60, select: SUMMARY_FIELDS });
+    const ch = completeHours(ctx.platform) * 3600e3, now = Date.now();
+    const out = list.filter(o => o.storeId === ctx.sid).sort((a, b) => num(b.createdAt) - num(a.createdAt)).slice(0, 40).map(o => ({
+      id: o.id, status: o.status, createdAt: num(o.createdAt), deliveredAt: num(o.deliveredAt), total: o.total, currency: o.currency,
+      items: (o.items || []).map(i => ({ name: i.name, opt: i.opt, qty: i.qty })),
+      warrantyEnd: o.deliveredAt ? num(o.deliveredAt) + ch : 0,
+      canReport: o.status === 'preparing' || (o.status === 'delivered' && now < num(o.deliveredAt) + ch)
+    }));
+    return json({ email: c.email, warrantyDays: warrantyDays(ctx.platform), orders: out });
+  }
+  if (p === '/api/my/claim') {
+    // ربط الطلبات القديمة (اللي على هذا الجهاز) بحساب الزبون
+    const want = (Array.isArray(body.orders) ? body.orders : []).slice(0, 20).filter(x => ID_RE.test(String(x?.id || '')) && typeof x?.token === 'string' && x.token.length < 80);
+    if (!want.length) return json({ ok: true, n: 0 });
+    const docs = await fs.getMany(want.map(x => `orders/${x.id}`), { mask: ['storeId', 'tokenHash', 'customerKey'] });
+    const W = [];
+    for (let i = 0; i < want.length; i++) {
+      const o = docs[i];
+      if (!o || o.storeId !== ctx.sid || o.customerKey) continue;
+      if (!safeEq(await sha256hex(want[i].token), o.tokenHash)) continue;
+      W.push(fs.wUpdate(`orders/${want[i].id}`, { customerKey: c.key, customerEmail: c.email }));
+    }
+    if (W.length) await fs.commit(W);
+    return json({ ok: true, n: W.length });
+  }
+  throw new HttpError(404, 'غير موجود.');
+}
+
 async function storeRoute(req, env, ctx, slug, url, host) {
   const p = url.pathname, method = req.method;
   if (method === 'GET' && ASSETS[p]) {
@@ -1357,8 +1442,19 @@ async function storeRoute(req, env, ctx, slug, url, host) {
   if (m && method === 'POST') {
     const o = await orderForCustomer(req, fs, slug, m[1]);
     if (m[2] === 'received') {
-      if (!['delivered', 'problem'].includes(o.status)) throw new HttpError(409, 'الطلب لسه ما تسلّمش.');
-      await completeOrder(fs, o.id, 'customer');
+      // الزبون أكد إن كل شي تمام (أو إن المشكلة انحلت). الضمان يكمل لين آخر مدته، وبعدها الفلوس تتحول للتاجر
+      const ch = completeHours(await platformOf(fs)) * 3600e3;
+      await fs.tx(async (tx, W) => {
+        const x = await fs.get(`orders/${o.id}`, { tx });
+        const now = Date.now();
+        if (x.status === 'delivered') { if (!x.received) W.push(fs.wUpdate(`orders/${o.id}`, { received: true, receivedAt: now, updatedAt: now })); return; }
+        if (x.status !== 'problem') throw new HttpError(409, 'الطلب لسه ما تسلّمش.');
+        const allDone = (x.items || []).every(i => i.status === 'delivered');
+        const upd = { problem: { ...x.problem, solvedAt: now }, updatedAt: now, received: true, receivedAt: now, log: [...(x.log || []), { s: 'solved', at: now, by: 'customer' }].slice(-30) };
+        if (allDone && x.deliveredAt) Object.assign(upd, { status: 'delivered', autoAt: Math.max(now + 3600e3, num(x.deliveredAt) + ch) });
+        else Object.assign(upd, { status: 'preparing', autoAt: null });
+        W.push(fs.wUpdate(`orders/${o.id}`, upd));
+      });
     } else {
       const body = await readJson(req, 4000);
       const text = clean(body.text, 600);
@@ -1378,6 +1474,7 @@ async function storeRoute(req, env, ctx, slug, url, host) {
     }
     return json(await customerView(fs, { ...(await fs.get(`orders/${o.id}`)), id: o.id }, slug));
   }
+  if (p.startsWith('/api/auth/') || p.startsWith('/api/my/') || p === '/api/me') return customerRoute(req, env, fs, slug, p, method);
   if (p.startsWith('/api/')) throw new HttpError(404, 'غير موجود.');
   if (method !== 'GET' && method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
   return storePage(env, fs, slug, host, url);
