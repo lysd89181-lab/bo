@@ -11,7 +11,7 @@ const DEFAULT_FEES = [{ upTo: 50, rate: 5 }, { upTo: 100, rate: 4 }, { upTo: 200
 const OPEN = ['awaiting', 'preparing', 'delivered', 'problem'];
 const CUR_SYM = { LYD: 'د.ل', SAR: 'ر.س', USDT: 'USDT' };
 const ASSETS = { '/store.js': 'text/javascript; charset=utf-8', '/store.css': 'text/css; charset=utf-8', '/store-theme.js': 'text/javascript; charset=utf-8' };
-const STORE_FIELDS = ['ownerId', 'slug', 'name', 'country', 'currency', 'status', 'suspended', 'design', 'sections', 'info', 'categories', 'logoV', 'coverV', 'launchedAt', 'updatedAt'];
+const STORE_FIELDS = ['ownerId', 'slug', 'name', 'country', 'currency', 'status', 'suspended', 'design', 'sections', 'info', 'categories', 'logoV', 'coverV', 'launchedAt', 'updatedAt', 'payMethods'];
 const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt'];
 const USER_FIELDS = ['isActive', 'planExpiresAt', 'plan', 'status', 'storeAccess', 'role', 'displayName'];
 
@@ -135,7 +135,7 @@ class FS {
     if (TOKEN && Date.now() < TOKEN_EXP - 120e3) return TOKEN;
     const now = Math.floor(Date.now() / 1000);
     const head = b64urlStr(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-    const body = b64urlStr(JSON.stringify({ iss: this.sa.client_email, scope: 'https://www.googleapis.com/auth/datastore', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
+    const body = b64urlStr(JSON.stringify({ iss: this.sa.client_email, scope: 'https://www.googleapis.com/auth/cloud-platform', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
     const pem = this.sa.private_key.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
     const key = await crypto.subtle.importKey('pkcs8', fromB64url(pem.replace(/\+/g, '-').replace(/\//g, '_')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
     const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(`${head}.${body}`));
@@ -261,7 +261,7 @@ async function verifyIdToken(token, pid) {
   const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, fromB64url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
   const now = Math.floor(Date.now() / 1000);
   if (!ok || pay.aud !== pid || pay.iss !== `https://securetoken.google.com/${pid}` || !pay.sub || typeof pay.sub !== 'string' || pay.exp < now || pay.iat > now + 300 || (pay.auth_time && pay.auth_time > now + 300)) throw new HttpError(401, 'سجّل الدخول من جديد.');
-  return { uid: pay.sub, email: pay.email || '' };
+  return { uid: pay.sub, email: pay.email || '', verified: pay.email_verified === true };
 }
 
 /* ===================== كاش بسيط في الذاكرة ===================== */
@@ -307,7 +307,9 @@ async function methodsFor(fs, store, platform) {
   const all = await memo('methods', 60e3, () => fs.query('paymentMethods', []));
   const cur = store.currency;
   const rate = num(platform.usdtRate?.[cur]);
-  return all.filter(m => m.active !== false && Array.isArray(m.useFor) && m.useFor.includes('store'))
+  const chosen = Array.isArray(store.payMethods) ? store.payMethods : null;
+  return all.filter(m => m.active !== false && Array.isArray(m.useFor) && m.useFor.includes('store')
+      && (!Array.isArray(m.storeCountries) || m.storeCountries.includes(store.country)) && (!chosen || chosen.includes(m.id)))
     .map(m => {
       const curs = Array.isArray(m.currencies) && m.currencies.length ? m.currencies : ['LYD', 'SAR', 'USDT'];
       const pay = curs.includes(cur) ? cur : curs.includes('USDT') && rate > 0 ? 'USDT' : '';
@@ -393,7 +395,7 @@ async function readJson(req, max) {
   if (txt.length > max) throw new HttpError(413, 'الطلب كبير. صغّر صورة الإيصال.');
   try { const j = JSON.parse(txt || '{}'); if (!j || typeof j !== 'object' || Array.isArray(j)) throw 0; return j; } catch { throw new HttpError(400, 'بيانات غير صحيحة.'); }
 }
-async function createOrder(req, env, fs, slug) {
+async function createOrder(req, env, fs, slug, ectx) {
   const body = await readJson(req, 1_300_000);
   const ctx = await storeCtx(fs, slug);
   if (!ctx) throw new HttpError(404, 'المتجر مش موجود.');
@@ -547,6 +549,7 @@ async function createOrder(req, env, fs, slug) {
     return { id: oid, total, payAmount, payCurrency };
   });
   await purgeStore(slug);
+  later(ectx, pushTo(fs, env, { roles: ['admin', 'staff'] }, { title: 'طلب متجر جديد', body: `${clean(store.name, 40)}: ${fmtMoney(result.payAmount, result.payCurrency)} بانتظار تأكيد الدفع`, link: 'admin.html#sorders', tag: 'sorder' }));
   return json({ ok: true, id: result.id, token, total: result.total, payAmount: result.payAmount, payCurrency: result.payCurrency }, 201);
 }
 
@@ -648,7 +651,7 @@ async function releaseOrder(fs, id, status, note, by, expectExpired) {
 }
 
 /* ===================== تأكيد الدفع والتسليم التلقائي ===================== */
-async function confirmOrder(fs, id, by) {
+async function confirmOrder(fs, id, by, env, ctx) {
   const out = await fs.tx(async (tx, W) => {
     const o = await fs.get(`orders/${id}`, { tx });
     if (!o) throw new HttpError(404, 'الطلب مش موجود.');
@@ -739,10 +742,14 @@ async function confirmOrder(fs, id, by) {
     const nw = { pending: round2(num(wal.pending) + o.subtotal), updatedAt: now };
     W.push(w ? fs.wUpdate(`wallets/${sid}`, nw) : fs.wCreate(`wallets/${sid}`, { ...wal, ...nw }));
     ledger(fs, W, o, 'hold', o.subtotal, 'طلب مدفوع (معلّق لين الاستلام)', now);
-    return { status, slug: o.slug, pending, failed };
+    return { status, slug: o.slug, pending, failed, storeId: sid, sub: o.subtotal, cur: o.currency, oid: id };
   });
   await purgeStore(out.slug);
-  return out;
+  if (env) later(ctx, pushTo(fs, env, { uids: [out.storeId] }, out.status === 'delivered'
+    ? { title: 'بيعة جديدة في متجرك 🎉', body: `طلب #${out.oid} تسلّم للزبون تلقائياً · ${fmtMoney(out.sub, out.cur)}`, link: 'app.html#store/orders', tag: 'order' }
+    : { title: out.failed ? 'طلب يحتاج انتباهك' : 'طلب جديد يحتاج تسليم', body: `طلب #${out.oid} · ${fmtMoney(out.sub, out.cur)}${out.failed ? ' · فيه منتجات ما تسلّمتش' : ''}`, link: 'app.html#store/orders', tag: 'order' }));
+  const { storeId, sub, cur, oid, ...pub } = out;
+  return pub;
 }
 
 /* ===================== التاجر: تسليم يدوي ورد على البلاغ ===================== */
@@ -835,7 +842,7 @@ async function settleWallet(fs, sid) {
     return amount;
   });
 }
-async function payoutPaid(fs, uid, id, body) {
+async function payoutPaid(fs, uid, id, body, env, ctx) {
   const reference = clean(body.reference, 120);
   return fs.tx(async (tx, W) => {
     const p = await fs.get(`payouts/${id}`, { tx });
@@ -846,6 +853,9 @@ async function payoutPaid(fs, uid, id, body) {
     if (w) W.push(fs.wUpdate(`wallets/${p.storeId}`, { inPayout: round2(Math.max(0, num(w.inPayout) - p.amount)), withdrawn: round2(num(w.withdrawn) + p.amount), updatedAt: now }));
     W.push(fs.wUpdate(`payouts/${id}`, { status: 'paid', paidAt: now, paidBy: uid, reference }));
     W.push(fs.wCreate(`ledger/${id}-paid`, { storeId: p.storeId, payoutId: id, type: 'paid', amount: 0, currency: p.currency, note: `تم التحويل${reference ? ' · ' + reference : ''}`, month: monthKey(now), at: now }));
+    return { ok: true, p };
+  }).then(r => {
+    if (env) later(ctx, pushTo(fs, env, { uids: [r.p.storeId] }, { title: 'وصلتك تسوية 💰', body: `تم تحويل ${fmtMoney(r.p.amount, r.p.currency)} لحسابك`, link: 'app.html#store/wallet', tag: 'payout' }));
     return { ok: true };
   });
 }
@@ -866,7 +876,391 @@ async function maintenance(env) {
       for (const w of ws) { if (!budget()) break; try { if ((await settleWallet(fs, w.id)) !== null) done.settled++; } catch (e) { console.log('settle', w.id, e.message); } }
     }
   } catch (e) { console.log('maintenance', e.message); }
+  try { if (fs.calls < 30) done.daily = await dailyJobs(fs, env); } catch (e) { console.log('daily', e.message); }
   return done;
+}
+
+/* ===================== Google APIs عامة (FCM و Auth) ===================== */
+async function gcall(fs, method, url, body) {
+  const tok = await fs.token();
+  fs.calls++;
+  const r = await fetch(url, { method, headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const txt = await r.text(); let j = {}; try { j = txt ? JSON.parse(txt) : {}; } catch { }
+  return { ok: r.ok, status: r.status, j };
+}
+
+/* ===================== الإشعارات (Firebase Cloud Messaging) ===================== */
+const PUSH_RE = /^[A-Za-z0-9:_\-]{20,4096}$/;
+async function pushRegister(fs, uid, role, body) {
+  const token = String(body.token || '');
+  if (!PUSH_RE.test(token)) throw new HttpError(400, 'رمز الإشعارات غير صالح.');
+  const id = (await sha256hex(token)).slice(0, 40);
+  if (body.on === false) { await fs.commit([fs.wDelete(`pushTokens/${id}`)]); return { ok: true }; }
+  await fs.commit([fs.wSet(`pushTokens/${id}`, { uid, role: role || 'merchant', token, ua: clean(body.ua, 160), at: Date.now() })]);
+  return { ok: true };
+}
+async function pushTo(fs, env, { uids = [], roles = [] }, msg) {
+  try {
+    const lists = [];
+    for (let i = 0; i < uids.length; i += 10) lists.push(fs.query('pushTokens', [['uid', 'in', uids.slice(i, i + 10)]], { limit: 50 }));
+    if (roles.length) lists.push(fs.query('pushTokens', [['role', 'in', roles]], { limit: 50 }));
+    const toks = new Map(); (await Promise.all(lists)).flat().forEach(t => toks.set(t.id, t));
+    const link = `${siteOrigin(env)}/${msg.link || ''}`;
+    let sent = 0;
+    for (const t of [...toks.values()].slice(0, 25)) {
+      if (fs.calls > 45) break;
+      const r = await gcall(fs, 'POST', `https://fcm.googleapis.com/v1/projects/${fs.pid}/messages:send`, {
+        message: {
+          token: t.token, notification: { title: msg.title, body: msg.body },
+          data: { link }, webpush: { fcm_options: { link }, notification: { icon: `${siteOrigin(env)}/icon-192.png`, badge: `${siteOrigin(env)}/icon-192.png`, dir: 'rtl', lang: 'ar', tag: msg.tag || 'malafy' } }
+        }
+      });
+      if (r.ok) sent++;
+      else if (r.status === 404 || /UNREGISTERED|INVALID_ARGUMENT|NOT_FOUND/.test(JSON.stringify(r.j))) { try { await fs.commit([fs.wDelete(`pushTokens/${t.id}`)]); } catch { } }
+      else console.log('fcm', r.status, JSON.stringify(r.j).slice(0, 200));
+    }
+    return sent;
+  } catch (e) { console.log('push', e.message); return 0; }
+}
+const later = (ctx, p) => { if (ctx?.waitUntil) ctx.waitUntil(p); else return p; };
+
+/* ===================== الإيميلات (Resend) ===================== */
+function mailHTML({ title, intro, code, button, note }) {
+  const e = escHtml;
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(title)}</title></head>
+<body style="margin:0;padding:0;background:#EEF0F5;font-family:Tahoma,Arial,sans-serif;direction:rtl">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF0F5;padding:28px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2E5EE">
+<tr><td style="background:#070B19;padding:22px 26px;text-align:right"><span style="display:inline-block;width:34px;height:34px;line-height:34px;text-align:center;border-radius:10px;background:#F59E0B;color:#1A1205;font-weight:bold;font-size:18px;vertical-align:middle">م</span>
+<span style="color:#ffffff;font-size:20px;font-weight:bold;vertical-align:middle;margin-right:8px">ملفي</span></td></tr>
+<tr><td style="padding:30px 26px 10px;text-align:right">
+<h1 style="margin:0 0 12px;font-size:21px;color:#141829">${e(title)}</h1>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.9;color:#4A5270">${e(intro)}</p>
+${code ? `<div style="margin:6px 0 22px;text-align:center"><div style="display:inline-block;direction:ltr;letter-spacing:10px;font-size:34px;font-weight:bold;color:#141829;background:#FFF7E6;border:2px dashed #F59E0B;border-radius:14px;padding:14px 22px 14px 32px;font-family:Consolas,Menlo,monospace">${e(code)}</div></div>` : ''}
+${button ? `<div style="margin:6px 0 24px;text-align:center"><a href="${e(button.url)}" style="display:inline-block;background:#F59E0B;color:#1A1205;text-decoration:none;font-weight:bold;font-size:15px;padding:13px 28px;border-radius:12px">${e(button.text)}</a></div>` : ''}
+${note ? `<p style="margin:0 0 8px;font-size:13px;line-height:1.8;color:#7A819C">${e(note)}</p>` : ''}
+</td></tr>
+<tr><td style="padding:18px 26px 24px;border-top:1px solid #EEF0F5;text-align:right;font-size:12px;line-height:1.8;color:#9AA0B8">هذي رسالة تلقائية من منصة ملفي، ما تردش عليها.<br>لو ما طلبتش هذا، تجاهل الرسالة وحسابك في أمان.</td></tr>
+</table><p style="font-size:11px;color:#9AA0B8;margin:14px 0 0">malafy.net</p></td></tr></table></body></html>`;
+}
+async function sendMail(env, to, subject, html) {
+  if (!env.RESEND_KEY) throw new HttpError(503, 'إرسال الإيميلات مش مفعّل بعد في السيرفر.');
+  const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: `Bearer ${env.RESEND_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: env.MAIL_FROM || 'ملفي <noreply@malafy.net>', to: [to], subject, html }) });
+  if (!r.ok) { console.log('resend', r.status, (await r.text()).slice(0, 300)); throw new HttpError(502, 'تعذر إرسال الإيميل، جرّب بعد شوية.'); }
+  return true;
+}
+
+/* ===================== أكواد التحقق (6 أرقام) ===================== */
+const code6 = () => { const b = new Uint32Array(1); let n; do { crypto.getRandomValues(b); n = b[0]; } while (n >= 4294000000); return String(n % 1000000).padStart(6, '0'); };
+const codeHash = (fs, code, key) => sha256hex(`${code}|${key}|${fs.sa.private_key_id || fs.pid}`);
+async function issueCode(fs, env, key, email, kind) {
+  const now = Date.now();
+  const d = await fs.get(`authCodes/${key}`);
+  const recent = (d?.sends || []).filter(t => now - t < 3600e3);
+  if (d && now - num(d.sentAt) < 55e3) throw new HttpError(429, 'استنى دقيقة قبل ما تطلب كود جديد.');
+  if (recent.length >= 5) throw new HttpError(429, 'طلبت أكواد كثيرة، جرّب بعد ساعة.');
+  const code = code6();
+  await fs.commit([fs.wSet(`authCodes/${key}`, { hash: await codeHash(fs, code, key), exp: now + 10 * 60e3, tries: 0, sentAt: now, sends: [...recent, now].slice(-5), kind })]);
+  const verify = kind === 'verify';
+  await sendMail(env, email, verify ? `${code} كود تأكيد إيميلك في ملفي` : `${code} كود استرجاع كلمة المرور`, mailHTML({
+    title: verify ? 'أكّد إيميلك' : 'استرجاع كلمة المرور',
+    intro: verify ? 'أهلاً بيك في ملفي! استعمل الكود هذا باش تأكد إيميلك وتكمل تفعيل حسابك:' : 'وصلنا طلب لتغيير كلمة المرور لحسابك في ملفي. استعمل الكود هذا:',
+    code, note: 'الكود صالح لمدة 10 دقائق، وما تشاركهوش مع أي حد، حتى لو قال إنه من ملفي.'
+  }));
+}
+async function checkCode(fs, key, code) {
+  const d = await fs.get(`authCodes/${key}`);
+  const now = Date.now();
+  if (!d || num(d.exp) < now) throw new HttpError(400, 'الكود انتهى. اطلب كود جديد.');
+  if (num(d.tries) >= 5) throw new HttpError(429, 'محاولات كثيرة. اطلب كود جديد.');
+  if (!/^\d{6}$/.test(String(code || '')) || !safeEq(await codeHash(fs, String(code), key), d.hash)) {
+    await fs.commit([fs.wUpdate(`authCodes/${key}`, { tries: num(d.tries) + 1 })]);
+    throw new HttpError(400, `الكود غلط. باقيلك ${Math.max(0, 4 - num(d.tries))} محاولات.`);
+  }
+  await fs.commit([fs.wDelete(`authCodes/${key}`)]);
+}
+const IDT = fs => `https://identitytoolkit.googleapis.com/v1/projects/${fs.pid}`;
+async function authUpdate(fs, data) {
+  const r = await gcall(fs, 'POST', `${IDT(fs)}/accounts:update`, data);
+  if (!r.ok) { console.log('idt', r.status, JSON.stringify(r.j).slice(0, 300)); throw new HttpError(502, 'تعذر تحديث الحساب، جرّب بعد شوية.'); }
+}
+const normEmail = e => String(e || '').trim().toLowerCase().slice(0, 200);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+async function authRoute(fs, env, p, body, who) {
+  if (p === '/auth/verify/send') {
+    if (who.verified) throw new HttpError(409, 'إيميلك مؤكد من قبل.');
+    if (!who.email) throw new HttpError(400, 'ما فيش إيميل في حسابك.');
+    await issueCode(fs, env, `v_${who.uid}`, who.email, 'verify'); return { ok: true };
+  }
+  if (p === '/auth/verify/check') {
+    await checkCode(fs, `v_${who.uid}`, body.code);
+    await authUpdate(fs, { localId: who.uid, emailVerified: true }); return { ok: true };
+  }
+  const email = normEmail(body.email);
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'اكتب إيميل صحيح.');
+  const key = 'r_' + (await sha256hex(email)).slice(0, 32);
+  if (p === '/auth/reset/send') {
+    const r = await gcall(fs, 'POST', `${IDT(fs)}/accounts:lookup`, { email: [email] });
+    const u = r.ok ? r.j.users?.[0] : null;
+    if (u?.localId && !u.disabled) await issueCode(fs, env, key, email, 'reset');
+    return { ok: true };   // نفس الرد دايماً باش ما نكشفوش الإيميلات المسجلة
+  }
+  if (p === '/auth/reset/confirm') {
+    const pass = String(body.password || '');
+    if (pass.length < 6 || pass.length > 100) throw new HttpError(400, 'كلمة المرور لازم 6 أحرف على الأقل.');
+    await checkCode(fs, key, body.code);
+    const r = await gcall(fs, 'POST', `${IDT(fs)}/accounts:lookup`, { email: [email] });
+    const u = r.ok ? r.j.users?.[0] : null;
+    if (!u?.localId) throw new HttpError(400, 'الحساب مش موجود.');
+    await authUpdate(fs, { localId: u.localId, password: pass, emailVerified: true }); return { ok: true };
+  }
+  throw new HttpError(404, 'غير موجود.');
+}
+
+/* ===================== متجر التاجر: الحفظ من السيرفر ===================== */
+const TPLS = ['pulse', 'clean', 'pop', 'luxe', 'nova', 'nature'], PALS = ['malafy', 'ocean', 'emerald', 'royal', 'sunset', 'ruby', 'sky', 'mint', 'gold', 'mono'];
+const FONT_LIST = ['IBM Plex Sans Arabic', 'Cairo', 'Tajawal', 'Almarai', 'Noto Kufi Arabic', 'Readex Pro'];
+const SECTION_IDS = ['announce', 'hero', 'cats', 'featured', 'all', 'about', 'faq', 'policy'];
+const ICON_IDS = ['tv', 'pad', 'gem', 'card', 'sim', 'bolt', 'star', 'gift'];
+async function merchantGate(fs, uid) {
+  const [user, platform] = await Promise.all([fs.get(`users/${uid}`, { mask: USER_FIELDS }), platformOf(fs)]);
+  if (!user || user.status === 'deleted') throw new HttpError(403, 'الحساب محذوف.');
+  if (user.isActive !== true || !(num(user.planExpiresAt) > Date.now())) throw new HttpError(403, user.plan?.trial ? 'التجربة المجانية انتهت. اشترك باش تقدر تعدّل متجرك.' : 'اشتراكك منتهي أو موقوف. جدّده باش تقدر تعدّل متجرك.');
+  if (!(await merchantAllowed(fs, user, platform))) throw new HttpError(403, user.plan?.trial ? 'التجربة المجانية ما فيهاش متجر. اشترك في خطة فيها متجر.' : 'خطتك الحالية ما فيهاش متجر. رقّي اشتراكك لخطة فيها متجر، أو تواصل مع الإدارة.');
+  return { user, platform };
+}
+const imgOrEmpty = (v, max) => { if (v === '' || v == null) return ''; if (typeof v !== 'string' || v.length > max || !IMG_RE.test(v)) throw new HttpError(400, 'الصورة غير صالحة أو كبيرة.'); return v; };
+function cleanDesign(d = {}) {
+  return {
+    template: TPLS.includes(d.template) ? d.template : 'pulse', palette: PALS.includes(d.palette) ? d.palette : 'royal',
+    color: /^#[0-9a-fA-F]{6}$/.test(d.color || '') ? d.color : '', font: FONT_LIST.includes(d.font) ? d.font : 'IBM Plex Sans Arabic',
+    card: ['grid', 'list', 'large'].includes(d.card) ? d.card : 'grid', corner: ['sharp', 'soft', 'round'].includes(d.corner) ? d.corner : 'round', mode: d.mode === 'light' ? 'light' : 'dark'
+  };
+}
+function cleanInfo(i = {}) {
+  const so = i.socials && typeof i.socials === 'object' ? i.socials : {};
+  return {
+    heroTitle: clean(i.heroTitle, 80), heroSub: clean(i.heroSub, 160), announce: clean(i.announce, 120), about: clean(i.about, 1200), policy: clean(i.policy, 2000),
+    whatsapp: clean(i.whatsapp, 20), floatWa: i.floatWa !== false,
+    faq: (Array.isArray(i.faq) ? i.faq : []).map(f => ({ q: clean(f?.q, 160), a: clean(f?.a, 800) })).filter(f => f.q && f.a).slice(0, 12),
+    socials: Object.fromEntries(['instagram', 'tiktok', 'facebook', 'telegram', 'snapchat', 'x'].map(k => [k, clean(so[k], 200)]).filter(([, v]) => v))
+  };
+}
+const cleanSections = l => { const seen = new Set(); return (Array.isArray(l) ? l : []).filter(x => SECTION_IDS.includes(x?.id) && !seen.has(x.id) && seen.add(x.id)).map(x => ({ id: x.id, on: x.on !== false })); };
+async function storeCreate(fs, uid, body) {
+  const { user } = await merchantGate(fs, uid);
+  const name = clean(body.name, 40), slug = String(body.slug || '').toLowerCase(), country = body.country === 'SA' ? 'SA' : body.country === 'LY' ? 'LY' : '';
+  if (!name) throw new HttpError(400, 'اكتب اسم المتجر.');
+  if (!country) throw new HttpError(400, 'اختار دولة المتجر.');
+  if (!SLUG_RE.test(slug) || slug.includes('--') || RESERVED.includes(slug)) throw new HttpError(400, 'الرابط غير صالح أو محجوز.');
+  const tpl = TPLS.includes(body.template) ? body.template : 'pulse';
+  const T = { pulse: ['royal', 'grid', 'round', 'dark'], clean: ['ocean', 'list', 'soft', 'light'], pop: ['sunset', 'grid', 'round', 'light'], luxe: ['gold', 'large', 'sharp', 'dark'], nova: ['sky', 'grid', 'soft', 'dark'], nature: ['emerald', 'list', 'soft', 'light'] }[tpl];
+  const now = Date.now(), cur = country === 'SA' ? 'SAR' : 'LYD';
+  await fs.tx(async (tx, W) => {
+    const [st, sl] = await fs.getMany([`stores/${uid}`, `slugs/${slug}`], { tx });
+    if (st) throw new HttpError(409, 'عندك متجر من قبل.');
+    if (sl) throw new HttpError(409, 'الرابط هذا مأخوذ، جرّب غيره.');
+    W.push(fs.wCreate(`slugs/${slug}`, { storeId: uid }));
+    W.push(fs.wCreate(`stores/${uid}`, {
+      ownerId: uid, slug, name, country, currency: cur, status: 'active', suspended: false, createdAt: new Date(now), launchedAt: now, updatedAt: now,
+      design: { template: tpl, palette: T[0], color: '', font: 'IBM Plex Sans Arabic', card: T[1], corner: T[2], mode: T[3] },
+      sections: SECTION_IDS.map(id => ({ id, on: true })), categories: [],
+      info: { heroTitle: name, heroSub: '', announce: '', about: '', whatsapp: clean(user.phone || body.phone, 20), floatWa: true, policy: '', faq: [], socials: {} },
+      logo: '', logoV: 0, cover: '', coverV: 0
+    }));
+    W.push(fs.wUpdate(`users/${uid}`, { currency: cur === 'SAR' ? 'ر.س' : 'د.ل' }));
+  });
+  return { ok: true, slug };
+}
+async function storeOf(fs, uid) { const s = await fs.get(`stores/${uid}`, { mask: STORE_FIELDS }); if (!s) throw new HttpError(404, 'ما عندكش متجر.'); return s; }
+async function storeSave(fs, uid, body) {
+  await merchantGate(fs, uid);
+  const s = await storeOf(fs, uid);
+  const now = Date.now(), upd = { updatedAt: now };
+  if ('name' in body) { upd.name = clean(body.name, 40); if (!upd.name) throw new HttpError(400, 'اكتب اسم المتجر.'); }
+  if ('design' in body) upd.design = cleanDesign(body.design);
+  if ('sections' in body) upd.sections = cleanSections(body.sections);
+  if ('info' in body) upd.info = cleanInfo(body.info);
+  if ('status' in body) upd.status = body.status === 'paused' ? 'paused' : 'active';
+  if ('logo' in body) { upd.logo = imgOrEmpty(body.logo, 120000); upd.logoV = upd.logo ? now : 0; }
+  if ('cover' in body) { upd.cover = imgOrEmpty(body.cover, 420000); upd.coverV = upd.cover ? now : 0; }
+  if ('payMethods' in body) upd.payMethods = (Array.isArray(body.payMethods) ? body.payMethods : []).map(String).filter(x => ID_RE.test(x)).slice(0, 12);
+  await fs.commit([fs.wUpdate(`stores/${uid}`, upd)]);
+  await purgeStore(s.slug);
+  return { ok: true };
+}
+async function storeSlug(fs, uid, body) {
+  await merchantGate(fs, uid);
+  const slug = String(body.slug || '').toLowerCase();
+  if (!SLUG_RE.test(slug) || slug.includes('--') || RESERVED.includes(slug)) throw new HttpError(400, 'الرابط غير صالح أو محجوز.');
+  const old = await fs.tx(async (tx, W) => {
+    const [st, sl] = await fs.getMany([`stores/${uid}`, `slugs/${slug}`], { tx });
+    if (!st) throw new HttpError(404, 'ما عندكش متجر.');
+    if (st.slug === slug) return st.slug;
+    if (sl) throw new HttpError(409, 'الرابط هذا مأخوذ، جرّب غيره.');
+    W.push(fs.wCreate(`slugs/${slug}`, { storeId: uid }));
+    W.push(fs.wDelete(`slugs/${st.slug}`));
+    W.push(fs.wUpdate(`stores/${uid}`, { slug, updatedAt: Date.now() }));
+    return st.slug;
+  });
+  await purgeStore(old); await purgeStore(slug);
+  return { ok: true, slug };
+}
+async function storeCats(fs, uid, body) {
+  await merchantGate(fs, uid);
+  const s = await storeOf(fs, uid);
+  const list = (Array.isArray(body.categories) ? body.categories : []).slice(0, 12).map(c => ({
+    id: ID_RE.test(String(c?.id || '')) ? String(c.id) : 'c' + randomStr(8, 'abcdefghijkmnpqrstuvwxyz23456789'),
+    name: clean(c?.name, 30), icon: ICON_IDS.includes(c?.icon) ? c.icon : 'star'
+  })).filter(c => c.name);
+  if (new Set(list.map(c => c.id)).size !== list.length) throw new HttpError(400, 'فيه أقسام مكررة.');
+  const items = await fs.query('items', [], { parent: `stores/${uid}`, select: ['cat', 'name'] });
+  const gone = items.find(i => i.cat && !list.some(c => c.id === i.cat));
+  if (gone) { const c = (s.categories || []).find(x => x.id === gone.cat); throw new HttpError(409, `فيه منتجات في قسم "${c?.name || gone.cat}". انقلها لقسم ثاني قبل ما تحذفه.`); }
+  await fs.commit([fs.wUpdate(`stores/${uid}`, { categories: list, updatedAt: Date.now() })]);
+  await purgeStore(s.slug);
+  return { ok: true, categories: list };
+}
+const posNum = (v, max = 1e7) => { const n = round2(v); return n > 0 && n <= max ? n : 0; };
+function cleanItem(x, cats) {
+  const type = ['account', 'code', 'number', 'manual'].includes(x?.type) ? x.type : '';
+  if (!type) throw new HttpError(400, 'نوع المنتج غير صحيح.');
+  const name = clean(x.name, 80); if (!name) throw new HttpError(400, 'اكتب اسم المنتج.');
+  const cat = clean(x.cat, 30);
+  if (!cat || !cats.some(c => c.id === cat)) throw new HttpError(400, 'اختار قسم المنتج.');
+  const it = {
+    type, name, desc: clean(x.desc, 800), cat, image: imgOrEmpty(x.image, 200000), imgV: x.image ? Math.max(0, int(x.imgV)) || Date.now() : 0,
+    note: clean(x.note, 300), order: int(x.order), featured: x.featured === true, active: x.active !== false, updatedAt: Date.now()
+  };
+  if (type === 'account') {
+    it.productIds = (Array.isArray(x.productIds) ? x.productIds : []).map(String).filter(p => ID_RE.test(p)).slice(0, 10);
+    it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 8);
+    if (!it.productIds.length) throw new HttpError(400, 'اختار حساب واحد على الأقل.');
+    if (!it.durations.length) throw new HttpError(400, 'حط سعر لمدة وحدة على الأقل.');
+  } else if (type === 'code') {
+    it.productId = String(x.productId || ''); it.price = posNum(x.price); it.maxQty = Math.min(10, Math.max(1, int(x.maxQty) || 10));
+    if (!ID_RE.test(it.productId)) throw new HttpError(400, 'اختار فئة الأكواد.');
+    if (!it.price) throw new HttpError(400, 'حط سعر الكود.');
+  } else if (type === 'number') {
+    it.mode = x.mode === 'pick' ? 'pick' : 'country';
+    it.prices = it.mode === 'pick' ? [] : (Array.isArray(x.prices) ? x.prices : []).map(p => ({ country: clean(p?.country, 40), price: posNum(p?.price) })).filter(p => p.country && p.price).slice(0, 40);
+    if (it.mode === 'country' && !it.prices.length) throw new HttpError(400, 'حط سعر لدولة وحدة على الأقل.');
+  } else {
+    it.packs = (Array.isArray(x.packs) ? x.packs : []).map(p => ({ label: clean(p?.label, 60), price: posNum(p?.price) })).filter(p => p.label && p.price).slice(0, 20);
+    it.fields = (Array.isArray(x.fields) ? x.fields : []).map(f => ({ label: clean(f?.label, 40), req: f?.req !== false })).filter(f => f.label).slice(0, 4);
+    if (!it.packs.length) throw new HttpError(400, 'أضف باقة وحدة على الأقل (الاسم والسعر).');
+  }
+  return Object.assign(it, cleanStock(x, type));
+}
+function cleanStock(x, type) {
+  const o = { stock: Math.max(0, Math.min(100000, int(x.stock))) };
+  if (type === 'account') o.maxMonths = Math.max(0, Math.min(24, int(x.maxMonths)));
+  if (type === 'number') {
+    o.countries = (Array.isArray(x.countries) ? x.countries : []).map(c => ({ country: clean(c?.country, 40), n: Math.max(0, int(c?.n)) })).filter(c => c.country).slice(0, 100);
+    o.numbers = (Array.isArray(x.numbers) ? x.numbers : []).filter(n => ID_RE.test(String(n?.id || ''))).map(n => ({ id: String(n.id), mask: clean(n.mask, 40), country: clean(n.country, 40), price: posNum(n.price) })).filter(n => n.price).slice(0, 80);
+  }
+  return o;
+}
+async function itemSave(fs, uid, body) {
+  await merchantGate(fs, uid);
+  const s = await storeOf(fs, uid);
+  const it = cleanItem(body.item || {}, s.categories || []);
+  const id = body.id ? String(body.id) : randomStr(20, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789');
+  if (!ID_RE.test(id)) throw new HttpError(400, 'منتج غير صحيح.');
+  const ex = body.id ? await fs.get(`stores/${uid}/items/${id}`, { mask: ['createdAt'] }) : null;
+  if (body.id && !ex) throw new HttpError(404, 'المنتج مش موجود.');
+  await fs.commit([fs.wSet(`stores/${uid}/items/${id}`, { ...it, createdAt: ex?.createdAt || Date.now() })]);
+  await purgeStore(s.slug);
+  return { ok: true, id };
+}
+async function itemDelete(fs, uid, body) {
+  const s = await storeOf(fs, uid);
+  const id = String(body.id || ''); if (!ID_RE.test(id)) throw new HttpError(400, 'منتج غير صحيح.');
+  await fs.commit([fs.wDelete(`stores/${uid}/items/${id}`)]);
+  await purgeStore(s.slug);
+  return { ok: true };
+}
+async function itemActive(fs, uid, body) {
+  await merchantGate(fs, uid);
+  const s = await storeOf(fs, uid);
+  const id = String(body.id || ''); if (!ID_RE.test(id)) throw new HttpError(400, 'منتج غير صحيح.');
+  await fs.commit([fs.wUpdate(`stores/${uid}/items/${id}`, { active: body.active !== false, updatedAt: Date.now() })]);
+  await purgeStore(s.slug);
+  return { ok: true };
+}
+async function itemSync(fs, uid, body) {
+  const list = (Array.isArray(body.items) ? body.items : []).slice(0, 60);
+  if (!list.length) return { ok: true };
+  const s = await storeOf(fs, uid);
+  const ids = list.map(x => String(x?.id || '')).filter(id => ID_RE.test(id));
+  const cur = await fs.getMany(ids.map(id => `stores/${uid}/items/${id}`), { mask: ['type'] });
+  const W = [];
+  ids.forEach((id, i) => { if (cur[i]) W.push(fs.wUpdate(`stores/${uid}/items/${id}`, cleanStock(list.find(x => x.id === id), cur[i].type))); });
+  if (W.length) await fs.commit(W);
+  await purgeStore(s.slug);
+  return { ok: true, n: W.length };
+}
+
+/* ===================== تنبيه الأدمن بطلبات الاشتراك ===================== */
+async function notifyRequest(fs, env, uid, body) {
+  const id = String(body.id || ''); if (!ID_RE.test(id)) throw new HttpError(400, 'طلب غير صحيح.');
+  const r = await fs.get(`subscriptionRequests/${id}`);
+  if (!r || r.merchantId !== uid || r.status !== 'pending' || r.notified) return { ok: true };
+  await fs.commit([fs.wUpdate(`subscriptionRequests/${id}`, { notified: true })]);
+  await pushTo(fs, env, { roles: ['admin'] }, r.type === 'trial'
+    ? { title: 'طلب تجربة مجانية', body: `${clean(r.merchantName, 60)} يطلب تجربة مجانية`, link: 'admin.html#requests', tag: 'req' }
+    : { title: 'طلب اشتراك جديد', body: `${clean(r.merchantName, 60)}: ${clean(r.planName, 40)} · ${fmtMoney(r.price, r.currency || 'LYD')}`, link: 'admin.html#requests', tag: 'req' });
+  return { ok: true };
+}
+async function mailApproved(fs, env, body) {
+  const uid = String(body.uid || ''); if (!ID_RE.test(uid)) throw new HttpError(400, 'تاجر غير صحيح.');
+  const u = await fs.get(`users/${uid}`, { mask: ['email', 'displayName', 'plan', 'planExpiresAt'] });
+  if (!u?.email) return { ok: false };
+  const trial = !!u.plan?.trial;
+  await sendMail(env, u.email, trial ? 'تفعّلت تجربتك المجانية في ملفي' : 'تم تفعيل اشتراكك في ملفي ✅', mailHTML({
+    title: trial ? 'تجربتك المجانية جاهزة' : 'اشتراكك مفعّل',
+    intro: `أهلاً ${clean(u.displayName, 60) || ''}، ${trial ? 'تفعّلت التجربة المجانية لحسابك، وتقدر تبدأ تستعمل لوحتك توا.' : `تم تفعيل اشتراكك (${clean(u.plan?.name, 40)}) ويبقى شغال لين ${fmtDate(num(u.planExpiresAt))}.`}`,
+    button: { text: 'افتح لوحتك', url: `${siteOrigin(env)}/app.html` }
+  }));
+  return { ok: true };
+}
+
+/* ===================== التنبيهات اليومية ===================== */
+const LY_OFFSET = 2 * 3600e3;
+const lyDay = ms => new Date(ms + LY_OFFSET).toISOString().slice(0, 10);
+async function dailyJobs(fs, env) {
+  const now = Date.now(), p = await platformOf(fs);
+  const hour = Math.min(23, Math.max(0, int(p.renewHour ?? 17))), days = Math.min(30, Math.max(1, int(p.renewDays) || 3));
+  if (new Date(now + LY_OFFSET).getUTCHours() < hour) return 0;
+  const today = lyDay(now);
+  let st = await fs.get('system/daily');
+  if (st?.day !== today) {
+    const toks = await fs.query('pushTokens', [['role', '==', 'merchant']], { limit: 500, select: ['uid'] });
+    const subs = await fs.query('users', [['planExpiresAt', '>=', new Date(now)], ['planExpiresAt', '<=', new Date(now + 3 * DAY)]], { limit: 200, select: ['email'] });
+    st = { day: today, queue: [...new Set(toks.map(t => t.uid))].slice(0, 400), mail: subs.map(s => s.id).slice(0, 200) };
+    await fs.commit([fs.wSet('system/daily', st)]);
+  }
+  let n = 0;
+  const queue = [...(st.queue || [])], mail = [...(st.mail || [])];
+  while (queue.length && fs.calls < 38) {
+    const uid = queue.shift();
+    if (!ID_RE.test(uid)) continue;
+    const files = await fs.query('files', [['endDate', '>=', now - 7 * DAY], ['endDate', '<=', now + days * DAY]], { parent: `merchants/${uid}`, limit: 300, select: ['status', 'endDate'] });
+    const sold = files.filter(f => f.status === 'sold'), over = sold.filter(f => num(f.endDate) < now).length, soon = sold.length - over;
+    if (sold.length) { await pushTo(fs, env, { uids: [uid] }, { title: 'تجديدات اليوم', body: [soon ? `${soon} يحتاج تجديد` : '', over ? `${over} منتهي` : ''].filter(Boolean).join(' و ') + '. ذكّر زباينك قبل ما يروحوا.', link: 'app.html#reminders', tag: 'renew' }); n++; }
+  }
+  while (mail.length && fs.calls < 40 && env.RESEND_KEY) {
+    const uid = mail.shift();
+    if (!ID_RE.test(uid)) continue;
+    const [u, flag] = await fs.getMany([`users/${uid}`, `mailFlags/${uid}`]);
+    if (!u?.email || u.isActive !== true || u.plan?.trial || num(flag?.subExp) === num(u.planExpiresAt)) continue;
+    try {
+      await sendMail(env, u.email, 'اشتراكك في ملفي قرب ينتهي', mailHTML({ title: 'اشتراكك قرب ينتهي', intro: `أهلاً ${clean(u.displayName, 60)}، اشتراكك في ملفي ينتهي في ${fmtDate(num(u.planExpiresAt))}. جدّده من لوحتك باش ما يتوقفش شغلك، وبياناتك تبقى محفوظة.`, button: { text: 'جدّد الاشتراك', url: `${siteOrigin(env)}/app.html#settings` } }));
+      await fs.commit([fs.wSet(`mailFlags/${uid}`, { subExp: num(u.planExpiresAt), at: now })]);
+    } catch (e) { console.log('mail', e.message); }
+  }
+  await fs.commit([fs.wSet('system/daily', { day: today, queue, mail })]);
+  return n;
 }
 
 /* ===================== الصفحات ===================== */
@@ -956,7 +1350,7 @@ async function storeRoute(req, env, ctx, slug, url, host) {
     if (!cat) throw new HttpError(404, 'المتجر مش موجود.');
     return json(cat, 200, { 'cache-control': 'no-store' });
   }
-  if (p === '/api/orders' && method === 'POST') return createOrder(req, env, fs, slug);
+  if (p === '/api/orders' && method === 'POST') return createOrder(req, env, fs, slug, ctx);
   let m = p.match(/^\/api\/orders\/([A-Za-z0-9]{1,20})$/);
   if (m && method === 'GET') { const o = await orderForCustomer(req, fs, slug, m[1]); return json(await customerView(fs, o, slug)); }
   m = p.match(/^\/api\/orders\/([A-Za-z0-9]{1,20})\/(received|problem)$/);
@@ -977,6 +1371,10 @@ async function storeRoute(req, env, ctx, slug, url, host) {
         const now = Date.now();
         W.push(fs.wUpdate(`orders/${o.id}`, { status: 'problem', autoAt: null, problem: { text, at: now, by: 'customer' }, updatedAt: now, log: [...(x.log || []), { s: 'problem', at: now, by: 'customer' }].slice(-30) }));
       });
+      later(ctx, Promise.all([
+        pushTo(fs, env, { uids: [o.storeId] }, { title: 'بلاغ من زبون', body: `طلب #${o.id}: ${text.slice(0, 80)}`, link: 'app.html#store/orders', tag: 'problem' }),
+        pushTo(fs, env, { roles: ['admin'] }, { title: 'بلاغ على طلب متجر', body: `${clean(o.storeName, 40)} · #${o.id}`, link: 'admin.html#sorders', tag: 'problem' })
+      ]));
     }
     return json(await customerView(fs, { ...(await fs.get(`orders/${o.id}`)), id: o.id }, slug));
   }
@@ -998,27 +1396,36 @@ async function apiRoute(req, env, ctx, url) {
     if (url.pathname === '/health') return send({ ok: true });
     if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed');
     const fs = new FS(env);
+    const p = url.pathname;
+    if (p === '/auth/reset/send' || p === '/auth/reset/confirm') return send(await authRoute(fs, env, p, await readJson(req, 4000), null));
     const auth = req.headers.get('authorization') || '';
     const who = await verifyIdToken(auth.replace(/^Bearer\s+/i, ''), fs.pid);
+    if (p === '/auth/verify/send' || p === '/auth/verify/check') return send(await authRoute(fs, env, p, await readJson(req, 4000), who));
     const user = await fs.get(`users/${who.uid}`, { mask: ['role', 'status'] });
     if (!user || user.status === 'deleted') throw new HttpError(403, 'ما عندكش صلاحية.');
-    const body = await readJson(req, 20000);
-    const p = url.pathname;
+    const big = p === '/m/store/save' || p === '/m/items/save' || p === '/m/items/sync';
+    const body = await readJson(req, big ? 1_000_000 : 20000);
     let m;
     if ((m = p.match(/^\/m\/orders\/([A-Za-z0-9]{1,20})\/(deliver|reply)$/))) {
       return send(m[2] === 'deliver' ? await merchantDeliver(fs, who.uid, m[1], body) : await merchantReply(fs, who.uid, m[1], body));
     }
+    if (p === '/m/push') return send(await pushRegister(fs, who.uid, user.role, body));
+    const MER = { '/m/store/create': storeCreate, '/m/store/save': storeSave, '/m/store/slug': storeSlug, '/m/store/cats': storeCats, '/m/items/save': itemSave, '/m/items/delete': itemDelete, '/m/items/active': itemActive, '/m/items/sync': itemSync };
+    if (MER[p]) return send(await MER[p](fs, who.uid, body));
+    if (p === '/m/notify/request') return send(await notifyRequest(fs, env, who.uid, body));
     const staff = user.role === 'admin' || user.role === 'staff', admin = user.role === 'admin';
     if (!staff) throw new HttpError(403, 'ما عندكش صلاحية.');
     if ((m = p.match(/^\/a\/orders\/([A-Za-z0-9]{1,20})\/(confirm|reject|resolve)$/))) {
-      if (m[2] === 'confirm') return send(await confirmOrder(fs, m[1], who.uid));
+      if (m[2] === 'confirm') return send(await confirmOrder(fs, m[1], who.uid, env, ctx));
       if (m[2] === 'reject') { const slug = await releaseOrder(fs, m[1], 'rejected', clean(body.note, 300) || 'الدفع ما وصلش.', who.uid); purgeStore(slug); return send({ ok: true }); }
       if (!admin) throw new HttpError(403, 'حسم البلاغات للأدمن بس.');
       return send(await resolveOrder(fs, who.uid, m[1], body));
     }
     if (!admin) throw new HttpError(403, 'ما عندكش صلاحية.');
-    if ((m = p.match(/^\/a\/payouts\/([A-Za-z0-9_-]{1,60})\/paid$/))) return send(await payoutPaid(fs, who.uid, m[1], body));
+    if ((m = p.match(/^\/a\/payouts\/([A-Za-z0-9_-]{1,60})\/paid$/))) return send(await payoutPaid(fs, who.uid, m[1], body, env, ctx));
     if (p === '/a/maintenance') return send(await maintenance(env));
+    if (p === '/a/mail/approved') return send(await mailApproved(fs, env, body));
+    if (p === '/a/push/test') return send({ sent: await pushTo(fs, env, { uids: [who.uid] }, { title: 'تجربة الإشعارات ✅', body: 'الإشعارات شغالة على هذا الجهاز.', link: 'admin.html' }) });
     throw new HttpError(404, 'غير موجود.');
   } catch (e) { return errorResponse(e, h); }
 }

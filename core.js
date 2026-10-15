@@ -1,6 +1,7 @@
 // ملفي — الأدوات المشتركة بين كل الصفحات
 import {
-  initializeApp, getAuth, getFirestore, onAuthStateChanged, signOut, doc, getDoc, setDoc, serverTimestamp
+  initializeApp, getAuth, getFirestore, onAuthStateChanged, signOut, doc, getDoc, setDoc, serverTimestamp,
+  getMessaging, getToken, deleteToken, onMessage, isSupported
 } from './fb.js';
 export * from './fb.js';
 import { LANG, isEN, t, startI18n, getTheme, setTheme, setLang } from './i18n.js';
@@ -106,6 +107,86 @@ export async function apiPost(path, body) {
   let j = {}; try { j = await r.json(); } catch { }
   if (!r.ok) throw new Error(j.error || 'تعذر تنفيذ العملية، جرّب مرة ثانية.');
   return j;
+}
+
+// طلب للسيرفر بدون تسجيل دخول (استرجاع كلمة المرور)
+export async function apiPublic(path, body) {
+  let r;
+  try { r = await fetch(API_BASE + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }); }
+  catch { throw new Error('تعذر الاتصال بالسيرفر. تحقق من الإنترنت.'); }
+  let j = {}; try { j = await r.json(); } catch { }
+  if (!r.ok) throw new Error(j.error || 'تعذر تنفيذ العملية، جرّب مرة ثانية.');
+  return j;
+}
+
+/* ---------- الإشعارات ---------- */
+const UA = navigator.userAgent || '';
+export function pushEnv() {
+  const ios = /iPhone|iPad|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+  const android = /Android/.test(UA);
+  const chrome = /Chrome\//.test(UA) && !/SamsungBrowser|EdgA|OPR|Opera|wv\)|FBAN|FBAV|Instagram/.test(UA);
+  const api = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+  return { ios, standalone, android, chrome, api, perm: api ? Notification.permission : 'unsupported', on: !!lsGet('malafy.push') && api && Notification.permission === 'granted' };
+}
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { } }
+let vapidCache = null;
+async function vapid() {
+  if (vapidCache) return vapidCache;
+  const s = await getDoc(doc(db, 'settings', 'platform'));
+  vapidCache = (s.exists() && s.data().vapidKey) || '';
+  return vapidCache;
+}
+async function fcmToken(ask) {
+  if (!(await isSupported().catch(() => false))) throw new Error('المتصفح هذا ما يدعمش الإشعارات.');
+  const key = await vapid();
+  if (!key) throw new Error('الإشعارات مش مفعّلة من الإدارة بعد.');
+  if (ask) { const p = await Notification.requestPermission(); if (p !== 'granted') throw new Error(p === 'denied' ? 'رفضت الإشعارات. اسمح بيها من إعدادات المتصفح وجرّب مرة ثانية.' : 'لازم تسمح بالإشعارات.'); }
+  const reg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
+  return getToken(getMessaging(app), { vapidKey: key, serviceWorkerRegistration: reg });
+}
+export async function enablePush() {
+  const tok = await fcmToken(true);
+  if (!tok) throw new Error('تعذر تفعيل الإشعارات، جرّب مرة ثانية.');
+  await apiPost('/m/push', { token: tok, ua: UA.slice(0, 160) });
+  lsSet('malafy.push', tok);
+  return tok;
+}
+export async function disablePush() {
+  const tok = lsGet('malafy.push');
+  lsSet('malafy.push', null);
+  if (tok) { try { await apiPost('/m/push', { token: tok, on: false }); } catch { } }
+  try { await deleteToken(getMessaging(app)); } catch { }
+}
+// كل ما تفتح اللوحة: نجدد الرمز لو تغيّر، ونعرض الإشعار لو الصفحة مفتوحة
+export async function startPush() {
+  const e = pushEnv();
+  if (!e.api || e.perm !== 'granted' || !lsGet('malafy.push')) return;
+  try {
+    const tok = await fcmToken(false);
+    if (tok && tok !== lsGet('malafy.push')) { await apiPost('/m/push', { token: tok, ua: UA.slice(0, 160) }); lsSet('malafy.push', tok); }
+    onMessage(getMessaging(app), m => { const n = m.notification || {}; toast(`${n.title || ''}${n.body ? ' · ' + n.body : ''}`); chime(); });
+  } catch (err) { console.warn('push', err); }
+}
+export function chime() { try { const c = new (window.AudioContext || window.webkitAudioContext)(); [0, 180].forEach(d => setTimeout(() => { const o = c.createOscillator(), g = c.createGain(); o.frequency.value = 880; g.gain.value = .08; o.connect(g); g.connect(c.destination); o.start(); setTimeout(() => o.stop(), 140); }, d)); setTimeout(() => c.close(), 600); } catch { } }
+// كرت الإشعارات: يشرح حسب الجهاز ويفعّل بضغطة
+export function pushCardHTML(what) {
+  const e = pushEnv();
+  let body, btn = '';
+  if (e.on) { body = `<b class="t-ok">${t('الإشعارات مفعّلة على هذا الجهاز ✅')}</b>`; btn = `<button class="btn ghost sm" data-act="pushOff">${t('إيقاف')}</button>`; }
+  else if (e.ios && !e.standalone) body = `<b>${t('على الآيفون الإشعارات تحتاج خطوة وحدة:')}</b><br>${t('افتح الموقع من Safari، اضغط زر المشاركة')} <span class="ltr">⬆️</span> ${t('ثم «إضافة إلى الشاشة الرئيسية»، وافتح ملفي من الأيقونة الجديدة، وبعدين فعّل الإشعارات من هنا.')}`;
+  else if (!e.api) body = `${t('المتصفح هذا ما يدعمش الإشعارات.')} ${e.android ? t('افتح ملفي من متصفح Google Chrome.') : t('استعمل Google Chrome.')}`;
+  else if (e.perm === 'denied') body = `${t('الإشعارات محظورة في المتصفح. اضغط على')} 🔒 ${t('جنب الرابط، ثم الأذونات، واسمح بالإشعارات، وبعدين حدّث الصفحة.')}`;
+  else { body = `${esc(what)}${e.android && !e.chrome ? `<br><small class="t-amber">${t('ننصحك تستعمل متصفح Google Chrome باش توصلك الإشعارات بدون مشاكل.')}</small>` : ''}`; btn = `<button class="btn amber sm" data-act="pushOn">${icon('bell')} ${t('فعّل الإشعارات')}</button>`; }
+  return `<section class="card rv pushcard"><span class="fic">${icon('bell')}</span><div class="fmid" style="white-space:normal"><b style="margin-bottom:4px">${t('الإشعارات')}</b><div class="small muted" style="line-height:1.8">${body}</div></div>${btn}</section>`;
+}
+export async function pushAction(kind, btn, after) {
+  await busy(btn, async () => {
+    if (kind === 'on') { await enablePush(); toast(t('تم تفعيل الإشعارات')); startPush(); }
+    else { await disablePush(); toast(t('تم إيقاف الإشعارات')); }
+    after?.();
+  });
 }
 
 /* ---------- الأيقونات ---------- */

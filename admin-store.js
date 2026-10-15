@@ -1,6 +1,6 @@
 // ملفي — إدارة المتاجر: تأكيد الدفع، البلاغات، المتاجر، التسويات، الموظفين
 import {
-  db, $, $$, esc, num, icon, toast, modal, confirmBox, busy, empty, skeleton, errText, fmtDate, ago, apiPost, storeUrl, safeImg, t,
+  db, $, $$, esc, num, icon, toast, modal, confirmBox, busy, empty, skeleton, errText, fmtDate, ago, apiPost, storeUrl, safeImg, t, pushCardHTML,
   collection, doc, onSnapshot, query, where, getDoc, updateDoc
 } from './core.js';
 
@@ -51,6 +51,7 @@ export function vStoreOrders(view) {
   const sumTxt = o => Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' + ') : '—';
   view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('طلبات المتاجر')}</h1><p>${t('أكّد الدفع من الإيصال، والتسليم يصير تلقائياً')}</p></div></div>
+  ${A.isAdmin ? '' : `<div style="margin-bottom:16px">${pushCardHTML(t('فعّل الإشعارات باش يوصلك تنبيه أول ما يجي طلب يستنى تأكيد الدفع، أو بلاغ من زبون.'))}</div>`}
   ${A.isAdmin ? `<div class="kpis rv" style="margin-bottom:18px"><div class="kpi"><small>${t('مبيعات المتاجر هذا الشهر')}</small><b>${sumTxt(sales)}</b></div><div class="kpi"><small>${t('عمولة مكتملة هذا الشهر')}</small><b class="t-ok">${sumTxt(fees)}</b></div><div class="kpi"><small>${t('بانتظار الدفع')}</small><b class="num t-amber">${awaitingOrders().length}</b></div><div class="kpi"><small>${t('بلاغات مفتوحة')}</small><b class="num t-bad">${problemOrders().length}</b></div></div>` : ''}
   <div class="toolbar rv"><div class="chips scrollx">${tabs.map(([k, l, f]) => `<button class="chip ${X.otab === k ? 'on' : ''}" data-act="soTab" data-id="${k}">${t(l)}${f ? ` <span class="dim">${X.open.filter(f).length}</span>` : ''}</button>`).join('')}</div>
     ${X.otab === 'hist' ? `<input class="inp" type="month" id="soMonth" value="${X.month}" style="width:auto" aria-label="${t('الشهر')}">` : ''}</div>

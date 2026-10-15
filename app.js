@@ -2,7 +2,7 @@
 import {
   db, $, $$, esc, money, num, setCurrency, fmtDate, toInput, fromInput, startOfDay, addMonths, daysLeft,
   monthsCeil, tsMs, ago, leftText, DAY, normPhone, waLink, fill, copyText, icon, RIDGE, toast, modal,
-  confirmBox, busy, empty, skeleton, fmtShort, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification,
+  confirmBox, busy, empty, skeleton, fmtShort, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification, apiPost, pushCardHTML, pushAction, startPush,
   collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, addDoc, serverTimestamp
 } from './core.js';
 import { setupStore, startStore, stopStore, storeView, storeBell, scheduleSync, STORE_ACTS, storeState } from './mystore.js';
@@ -59,10 +59,11 @@ function fileState(f) {
   if (f.status === 'reserved') return 'res';
   if (f.status === 'sold') {
     if (f.endDate <= Date.now()) return 'over';
-    return daysLeft(f.endDate) <= 3 ? 'soon' : 'sold';
+    return daysLeft(f.endDate) <= renewDays() ? 'soon' : 'sold';
   }
   return 'av';
 }
+const renewDays = () => Math.min(30, Math.max(1, Math.floor(+S.platform?.renewDays) || 3));
 const reminders = () => S.files.filter(f => f.status === 'sold' && fileState(f) !== 'dead').sort((a, b) => a.endDate - b.endDate);
 const urgentCount = () => reminders().filter(f => ['soon', 'over'].includes(fileState(f))).length;
 function accCost(p, start, end) {
@@ -92,6 +93,7 @@ const { profile } = await requireUser();
 if (profile.role === 'staff') { location.replace('admin.html'); await new Promise(() => {}); }
 S.profile = profile;
 setCurrency(profile.currency);
+startPush();
 const NAV = [
   { id: 'home', icon: 'home', label: 'الرئيسية' },
   { id: 'store', icon: 'store', label: 'متجري' },
@@ -153,7 +155,7 @@ onSnapshot(doc(db, 'users', uid()), s => {
 onSnapshot(collection(db, 'plans'), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); arrived('plans'); }, onErr);
 onSnapshot(doc(db, 'settings', 'platform'), s => { S.platform = s.exists() ? s.data() : {}; arrived('platform'); }, onErr);
 onSnapshot(collection(db, 'banners'), s => { S.banners = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(b => b.active !== false && safeImg(b.image)).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('banners'); }, onErr);
-onSnapshot(collection(db, 'paymentMethods'), s => { S.methods = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.active !== false && (!Array.isArray(m.useFor) || m.useFor.includes('subs'))).sort((a, b) => (a.order || 0) - (b.order || 0)); arrived('methods'); }, onErr);
+onSnapshot(collection(db, 'paymentMethods'), s => { S.allMethods = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.active !== false).sort((a, b) => (a.order || 0) - (b.order || 0)); S.methods = S.allMethods.filter(m => !Array.isArray(m.useFor) || m.useFor.includes('subs')); arrived('methods'); }, onErr);
 onSnapshot(query(collection(db, 'subscriptionRequests'), where('merchantId', '==', uid())), s => {
   S.requests = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt)); arrived('requests');
 }, onErr);
@@ -210,7 +212,7 @@ function fileRow(f) {
 // صف تجديد (التذكيرات والرئيسية)
 function remRow(f) {
   const st = fileState(f), p = P(f.productId), d = daysLeft(f.endDate);
-  const cls = st === 'over' || d < 3 ? 'bad' : d < 7 ? 'warn' : 'ok';
+  const cls = st === 'over' ? 'bad' : st === 'soon' ? 'warn' : 'ok';
   const acts = st === 'over'
     ? `<button class="btn teal sm" data-act="renew" data-id="${f.id}">جدّد</button><button class="btn red sm" data-act="norenew" data-id="${f.id}">لم يجدد</button>`
     : `<button class="btn warn sm" data-act="remindWa" data-id="${f.id}">${icon('wa')} إرسال تذكير</button>`;
@@ -238,7 +240,7 @@ function vHome() {
   const inRange = (a, b) => S.sales.filter(s => s.date >= a && s.date < b);
   const tSales = inRange(today, Infinity), ySales = inRange(yday, today);
   const tProfit = tSales.reduce((a, s) => a + num(s.profit), 0);
-  const due = reminders().filter(f => fileState(f) === 'over' || daysLeft(f.endDate) <= 7);
+  const due = reminders().filter(f => ['over', 'soon'].includes(fileState(f)));
   const avail = S.files.filter(f => fileState(f) === 'av').length
     + S.codes.filter(c => c.status === 'available' && P(c.productId)).length
     + S.numbers.filter(n => n.status === 'available').length;
@@ -437,22 +439,19 @@ function vCustomers() {
 }
 
 /* ================= تجديدات قربت ================= */
-function remTab(f) {
-  if (fileState(f) === 'over') return 'late';
-  const d = daysLeft(f.endDate);
-  return d <= 1 ? 'today' : d <= 7 ? 'week' : null;
-}
 function vReminders() {
   const all = reminders();
-  const g = { today: [], week: [], late: [] };
-  all.forEach(f => { const k = remTab(f); if (k) g[k].push(f); });
-  if (!S.f.rtab) S.f.rtab = g.late.length && !g.today.length ? 'late' : 'today';
+  const g = { over: all.filter(f => fileState(f) === 'over'), due: all.filter(f => fileState(f) === 'soon'), active: all.filter(f => fileState(f) === 'sold') };
+  if (!S.f.rtab || !g[S.f.rtab]) S.f.rtab = g.due.length ? 'due' : g.over.length ? 'over' : 'active';
   const k = S.f.rtab;
+  const sub = { over: 'اشتراكات انتهت وما تجددتش', due: `${t('تنتهي خلال')} ${renewDays()} ${t('أيام أو أقل')}`, active: 'اشتراكات شغالة، ما تحتاجش حاجة توا' }[k];
   view.innerHTML = `
-  <div class="pagehead rv"><div><h1>تجديدات قربت</h1><p>تابع زباينك قبل ما تنتهي اشتراكاتهم</p></div></div>
-  <div class="tabs rv" style="margin-bottom:16px">${[['today', 'اليوم'], ['week', 'هذا الأسبوع'], ['late', 'متأخر']].map(([x, l]) => `<button class="${x === k ? 'on' : ''}" data-act="rtab" data-id="${x}">${l} <span class="dim">${g[x].length}</span></button>`).join('')}</div>
+  <div class="pagehead rv"><div><h1>التجديدات</h1><p>تابع زباينك قبل ما تنتهي اشتراكاتهم</p></div></div>
+  ${pushCardHTML(t('فعّل الإشعارات باش يوصلك كل يوم ملخص بالزباين اللي يحتاجوا تجديد، وطلبات متجرك أول بأول، حتى والموقع مقفول.'))}
+  <div class="tabs rv" style="margin:16px 0">${[['over', 'منتهي'], ['due', 'يحتاج تجديد'], ['active', 'مفعّل']].map(([x, l]) => `<button class="${x === k ? 'on' : ''}" data-act="rtab" data-id="${x}">${l} <span class="dim">${g[x].length}</span></button>`).join('')}</div>
+  <p class="hint rv" style="margin-bottom:12px">${sub}</p>
   <section class="card rv">${g[k].length ? `<div class="rlist">${g[k].map(remRow).join('')}</div>`
-    : `<div class="empty">${icon('check')}<h3>ما فيش تجديدات قربت 🎉</h3><p>كل زباينك مرتاحين</p></div>`}</section>`;
+    : `<div class="empty">${icon('check')}<h3>${k === 'active' ? 'ما فيش اشتراكات شغالة' : 'ما فيش حاجة هنا 🎉'}</h3><p>${k === 'active' ? 'بيع ملفات وتظهر هنا' : 'كل زباينك مرتاحين'}</p></div>`}</section>`;
 }
 
 /* ================= الإعدادات ================= */
@@ -472,7 +471,7 @@ function vSettings() {
       <div class="field"><label>الاسم أو اسم المتجر</label><input id="stName" maxlength="80" value="${esc(pr.displayName || '')}"></div>
       <div class="grid2"><div class="field"><label>رقم الواتساب</label><input id="stPhone" dir="ltr" maxlength="30" value="${esc(pr.phone || '')}"></div>
         <div class="field"><label>العملة</label><select id="stCur">${[['$', 'دولار ($)'], ['د.ل', 'دينار ليبي (د.ل)'], ['ر.س', 'ريال سعودي (ر.س)']].map(([v, l]) => `<option value="${v}" ${pr.currency === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
-      <div class="field"><label>البريد الإلكتروني</label><input value="${esc(pr.email)}" disabled dir="ltr"></div>
+      <div class="field"><label>البريد الإلكتروني</label><div class="row" style="flex-wrap:nowrap"><input value="${esc(pr.email)}" disabled dir="ltr" style="flex:1">${auth.currentUser?.emailVerified ? `<span class="badge ok">${t('مؤكد')}</span>` : `<button class="btn warn sm" type="button" data-act="verifyEmail">${t('تحقق من الإيميل')}</button>`}</div></div>
       <button class="btn amber" id="stSave">حفظ البيانات</button>
     </section>
     <section class="card rv">
@@ -565,32 +564,47 @@ function vDeleted() {
 }
 
 /* ================= تأكيد البريد ================= */
-let lastSend = 0;
+const codeBoxHTML = () => `<div class="field"><label>${t('الكود (6 أرقام)')}</label><input id="vCode" class="codein" inputmode="numeric" autocomplete="one-time-code" maxlength="6" dir="ltr" placeholder="••••••"></div>
+  <p class="err" id="vErr"></p>
+  <div class="row"><button class="btn amber" id="vDone">${icon('check')} ${t('تأكيد')}</button><button class="btn ghost" id="vSend">${icon('send')} ${t('ابعتلي كود جديد')}</button></div>
+  <p class="hint" style="margin-top:12px">${t('الكود صالح 10 دقائق. لو ما لقيتش الرسالة، شوف مجلد الرسائل غير المرغوب فيها (Spam).')}</p>`;
+async function sendCode(auto) {
+  try { await apiPost('/auth/verify/send'); try { sessionStorage.setItem('malafy.vsent', Date.now()); } catch { } toast(t('بعتنالك كود التأكيد على إيميلك')); return true; }
+  catch (e) {
+    if (/مؤكد من قبل/.test(e.message)) { await auth.currentUser.reload(); await auth.currentUser.getIdToken(true); location.reload(); return false; }
+    if (!auto || !/استنى/.test(e.message)) toast(e.message, 'bad'); return false;
+  }
+}
+function bindCodeBox(root, done) {
+  const inp = $('#vCode', root);
+  inp.oninput = () => { inp.value = inp.value.replace(/\D/g, '').slice(0, 6); $('#vErr', root).textContent = ''; if (inp.value.length === 6) $('#vDone', root).click(); };
+  $('#vDone', root).onclick = e => busy(e.currentTarget, async () => {
+    if (!/^\d{6}$/.test(inp.value)) { $('#vErr', root).textContent = t('اكتب الكود كامل (6 أرقام).'); return; }
+    try { await apiPost('/auth/verify/check', { code: inp.value }); }
+    catch (err) { $('#vErr', root).textContent = err.message; inp.select(); return; }
+    await auth.currentUser.reload(); await auth.currentUser.getIdToken(true);
+    toast(t('تم تأكيد إيميلك ✅')); done();
+  });
+  $('#vSend', root).onclick = e => busy(e.currentTarget, () => sendCode(false));
+}
 function vVerify() {
   const u = auth.currentUser;
   view.innerHTML = `
   <div class="gate">
     <section class="hero rv">${RIDGE}
       <h1>أكّد بريدك الإلكتروني</h1>
-      <p class="muted">بعتنالك رابط تأكيد على <b class="ltr" data-raw>${esc(u?.email || '')}</b></p>
+      <p class="muted">بعتنالك كود من 6 أرقام على <b class="ltr" data-raw>${esc(u?.email || '')}</b></p>
     </section>
-    <section class="card glow rv" style="margin-top:22px">
-      <p style="margin-bottom:8px">افتح الرسالة واضغط الرابط، وبعدين ارجع هنا واضغط "تأكدت".</p>
-      <p class="muted small" style="margin-bottom:18px">لو ما لقيتهاش، شوف مجلد الرسائل غير المرغوب فيها (Spam).</p>
-      <div class="row"><button class="btn amber" id="vDone">${icon('check')} تأكدت</button><button class="btn ghost" id="vSend">${icon('send')} إعادة إرسال الرابط</button></div>
-    </section>
+    <section class="card glow rv" style="margin-top:22px" id="vBox">${codeBoxHTML()}</section>
   </div>`;
-  $('#vDone').onclick = e => busy(e.currentTarget, async () => {
-    await auth.currentUser.reload();
-    if (!auth.currentUser.emailVerified) { toast('البريد لسه ما تأكدش. افتح الرابط من الإيميل وجرّب مرة ثانية.', 'bad'); return; }
-    await auth.currentUser.getIdToken(true);   // تحديث التوكن باش القواعد تشوف التأكيد
-    location.reload();
-  });
-  $('#vSend').onclick = e => busy(e.currentTarget, async () => {
-    if (Date.now() - lastSend < 60000) { toast('استنى دقيقة قبل ما تطلب رابط جديد.', 'bad'); return; }
-    auth.languageCode = isEN ? 'en' : 'ar';
-    await sendEmailVerification(auth.currentUser); lastSend = Date.now(); toast('تم إرسال رابط جديد');
-  });
+  bindCodeBox($('#vBox'), () => location.reload());
+  let last = 0; try { last = +sessionStorage.getItem('malafy.vsent') || 0; } catch { }
+  if (Date.now() - last > 60000) sendCode(true);
+}
+function verifyModal() {
+  const m = modal(t('تأكيد الإيميل'), `<p class="muted" style="margin-bottom:14px">${t('بعتنالك كود على')} <b class="ltr" data-raw>${esc(auth.currentUser?.email || '')}</b></p>${codeBoxHTML()}`);
+  bindCodeBox(m.el, () => { m.close(); render(false); });
+  sendCode(true);
 }
 const needsVerify = () => S.profile.role !== 'admin' && auth.currentUser && !auth.currentUser.emailVerified;
 
@@ -627,10 +641,11 @@ async function askTrial(btn) {
   if (S.requests.some(r => r.status === 'pending')) { toast(t('عندك طلب قيد المراجعة.'), 'bad'); return; }
   await busy(btn, async () => {
     await auth.currentUser.getIdToken(true);
-    await addDoc(collection(db, 'subscriptionRequests'), {
+    const tref = await addDoc(collection(db, 'subscriptionRequests'), {
       type: 'trial', merchantId: uid(), merchantName: (S.profile.displayName || '').slice(0, 80), merchantEmail: S.profile.email,
       merchantPhone: (S.profile.phone || '').slice(0, 30), planName: 'تجربة مجانية', status: 'pending', createdAt: serverTimestamp()
     });
+    apiPost('/m/notify/request', { id: tref.id }).catch(() => {});
     toast(t('تم إرسال طلب التجربة للإدارة'));
   });
 }
@@ -715,6 +730,7 @@ function bindSubscribe(root) {
     });
     try { await b.commit(); }
     catch (e) { if (e?.code === 'permission-denied') throw new Error(t('تعذر إرسال الطلب. تأكد إن بريدك مؤكد، وإن الإدارة حدّثت إعدادات المنصة.')); throw e; }
+    apiPost('/m/notify/request', { id: rref.id }).catch(() => {});
     toast('تم إرسال الطلب للإدارة');
     root.closest('.mback') && $('[data-x]', root.closest('.mback')).click();
   });
@@ -1151,6 +1167,9 @@ const ACTS = {
   insVar: (id, b) => { const t = $('#' + id); const v = b.dataset.v, s = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s) + v + t.value.slice(t.selectionEnd ?? s); t.focus(); t.selectionStart = t.selectionEnd = s + v.length; },
   subscribe: () => { if (needsVerify()) { render(true); return; } const m = modal('الاشتراك', `<div id="subBoxM">${subscribeHTML()}</div>`, { wide: true }); bindSubscribe($('#subBoxM', m.el)); },
   bannerGo: id => showBanner(+id),
+  pushOn: (id, b) => pushAction('on', b, () => render(false)),
+  pushOff: (id, b) => pushAction('off', b, () => render(false)),
+  verifyEmail: () => verifyModal(),
   askTrial: (id, b) => askTrial(b)
 };
 document.addEventListener('click', e => {

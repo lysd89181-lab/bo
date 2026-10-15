@@ -1,7 +1,7 @@
 // ملفي — لوحة الأدمن
 import {
   db, $, $$, esc, money, num, fmtDate, toInput, fromInput, addMonths, daysLeft, tsMs, ago, leftText, DAY,
-  waLink, icon, RIDGE, toast, copyText, skeleton, errText, startOfDay, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref,
+  waLink, icon, RIDGE, toast, copyText, skeleton, errText, startOfDay, modal, confirmBox, busy, empty, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, apiPost, pushCardHTML, pushAction, startPush,
   collection, doc, onSnapshot, writeBatch, setDoc, updateDoc, deleteDoc, getDocs, getDoc, Timestamp, serverTimestamp
 } from './core.js';
 import { setupAdminStore, vStoreOrders, vStores, vPayouts, vStaff, storeSettingsHTML, bindStoreSettings, awaitingOrders, bellItems, ADMIN_STORE_ACTS } from './admin-store.js';
@@ -25,6 +25,7 @@ const pendingReqs = () => S.requests.filter(r => r.status === 'pending');
 const { profile } = await requireUser();
 if (profile.role !== 'admin' && profile.role !== 'staff') { location.replace('app.html'); await new Promise(() => {}); }
 const ADMIN = profile.role === 'admin';
+startPush();
 const NAV = ADMIN ? [
   { id: 'home', icon: 'home', label: 'نظرة عامة' },
   { id: 'sorders', icon: 'receipt', label: 'طلبات المتاجر' },
@@ -100,6 +101,7 @@ function vHome() {
   view.innerHTML = `
   <div class="dash">
     <aside class="dash-side" style="display:flex;flex-direction:column;gap:22px">
+      ${pushCardHTML(t('فعّل الإشعارات باش يوصلك تنبيه بطلبات الاشتراك والتجربة المجانية، وطلبات المتاجر اللي تستنى تأكيد الدفع.'))}
       ${awaitingOrders().length ? `<a class="card glow rv chan" href="#sorders"><span class="fic">${icon('receipt')}</span><span class="fmid"><b>${t('طلبات متاجر بانتظار تأكيد الدفع')}</b><small>${awaitingOrders().length} ${t('طلب')}</small></span><span class="btn amber sm">${t('راجع')}</span></a>` : ''}
       <div class="card rv">
         <div class="chead"><div><h2>طلبات تنتظرك</h2><p>فعّل التجار بعد التأكد من الدفع</p></div><a class="link" href="#requests">الكل</a></div>
@@ -287,6 +289,7 @@ async function approve(r) {
     b.update(doc(db, 'subscriptionRequests', r.id), { status: 'approved', reviewedAt: serverTimestamp() });
     b.update(doc(db, 'users', u.id), { isActive: true, planExpiresAt: Timestamp.fromMillis(end), plan: { id: plan.id, name: plan.name, months: plan.months } });
     await b.commit(); toast(`تم تفعيل ${r.merchantName}`);
+    apiPost('/a/mail/approved', { uid: u.id }).catch(() => {});
   } catch (e) { toast(e.message, 'bad'); }
 }
 async function approveTrial(r, u) {
@@ -298,6 +301,7 @@ async function approveTrial(r, u) {
     b.update(doc(db, 'subscriptionRequests', r.id), { status: 'approved', reviewedAt: serverTimestamp() });
     b.update(doc(db, 'users', u.id), { isActive: true, trialUsed: true, planExpiresAt: Timestamp.fromMillis(Date.now() + mins * 60000), plan: { id: 'trial', name: 'تجربة مجانية', months: 0, trial: true } });
     await b.commit(); toast(`تم تفعيل ${r.merchantName}`);
+    apiPost('/a/mail/approved', { uid: u.id }).catch(() => {});
   } catch (e) { toast(e.message, 'bad'); }
 }
 async function showReceipt(r) {
@@ -420,7 +424,12 @@ function vSettings() {
     <div class="field"><label>رقم واتساب الدعم</label><input id="gsSupport" type="tel" dir="ltr" maxlength="30" placeholder="09XXXXXXXX" value="${esc(pf.supportWhatsapp || '')}"></div>
     <div class="field"><label>رابط قناة واتساب</label><input id="gsWaCh" dir="ltr" maxlength="300" placeholder="https://whatsapp.com/channel/..." value="${esc(pf.waChannel || '')}"></div>
     <div class="field"><label>رابط قناة تيليجرام</label><input id="gsTgCh" dir="ltr" maxlength="300" placeholder="https://t.me/..." value="${esc(pf.tgChannel || '')}"></div>
-    <button class="btn amber" id="gsSave">حفظ</button>
+    <h2 style="margin:22px 0 14px">${t('التجديدات والإشعارات')}</h2>
+    <div class="grid2"><div class="field"><label>${t('«يحتاج تجديد» قبل الانتهاء بـ (أيام)')}</label><input id="gsRD" type="number" min="1" max="30" inputmode="numeric" dir="ltr" value="${pf.renewDays || 3}"></div>
+      <div class="field"><label>${t('ساعة ملخص التجديدات اليومي (توقيت ليبيا)')}</label><select id="gsRH">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${(pf.renewHour ?? 17) === h ? 'selected' : ''}>${String(h).padStart(2, '0')}:00${h === 17 ? ' (' + t('5 العصر') + ')' : ''}</option>`).join('')}</select></div></div>
+    <div class="field"><label>${t('مفتاح الإشعارات (VAPID Key) من Firebase')}</label><input id="gsVK" dir="ltr" maxlength="200" autocomplete="off" spellcheck="false" placeholder="BG…" value="${esc(pf.vapidKey || '')}"></div>
+    <p class="hint" style="margin:-6px 0 14px">${t('من Firebase: Project settings ← Cloud Messaging ← Web Push certificates ← Key pair.')}</p>
+    <div class="row"><button class="btn amber" id="gsSave">حفظ</button><span class="spacer"></span><button class="btn ghost" data-act="pushTest">${icon('bell')} ${t('جرّب إشعار على جهازي')}</button></div>
   </section>
   ${storeSettingsHTML(pf)}
   <section class="card glow rv" style="max-width:860px">
@@ -429,7 +438,7 @@ function vSettings() {
     ${S.methods.length ? `<div class="rems">${S.methods.map(m => `
       <div class="rem" style="grid-template-columns:auto 1fr auto;${m.active === false ? 'opacity:.55' : ''}">
         ${safeImg(m.image) ? `<img src="${safeImg(m.image)}" alt="" style="width:52px;height:52px;border-radius:12px;object-fit:contain;background:#fff;padding:4px">` : `<span class="avatar">${icon('card')}</span>`}
-        <div><b>${esc(m.name)}</b><small>${(m.fields || []).filter(f => f.value).length} حقل${(m.useFor || ['subs']).includes('store') ? ` · ${t('متاجر')}` : ''}${(m.useFor || ['subs']).includes('subs') ? ` · ${t('اشتراكات')}` : ''}${m.active === false ? '، مخفية' : ''}</small></div>
+        <div><b>${esc(m.name)}</b><small>${(m.fields || []).filter(f => f.value).length} حقل${(m.useFor || ['subs']).includes('store') ? ` · ${t('متاجر')}${Array.isArray(m.storeCountries) ? ' (' + m.storeCountries.map(c => t(c === 'SA' ? 'السعودية' : 'ليبيا')).join('، ') + ')' : ''}` : ''}${(m.useFor || ['subs']).includes('subs') ? ` · ${t('اشتراكات')}` : ''}${m.active === false ? '، مخفية' : ''}</small></div>
         <div class="row" style="flex-wrap:nowrap"><button class="btn ghost sm" data-act="methodForm" data-id="${m.id}">${icon('edit')} تعديل</button><button class="iconbtn sm" data-act="methodDel" data-id="${m.id}" aria-label="حذف">${icon('trash')}</button></div>
       </div>`).join('')}</div>` : empty('card', 'ما فيش طرق دفع. أضف مصرف أو ليبيانا باش التاجر يعرف وين يحوّل.', `<button class="btn amber" data-act="methodForm">${icon('plus')} إضافة طريقة</button>`)}
   </section>`;
@@ -438,10 +447,14 @@ function vSettings() {
     if (waCh && !bannerHref('url', waCh)) throw new Error(t('رابط قناة واتساب غير صحيح.'));
     if (tgCh && !bannerHref('url', tgCh)) throw new Error(t('رابط قناة تيليجرام غير صحيح.'));
     const mins = Math.floor(num($('#gsTrialMin').value)) || 30;
+    const vk = $('#gsVK').value.trim();
+    if (vk && !/^[A-Za-z0-9_-]{60,120}$/.test(vk)) throw new Error(t('مفتاح الإشعارات غير صحيح. انسخه كامل من Firebase.'));
     await setDoc(doc(db, 'settings', 'platform'), {
       registrationOpen: $('#gsReg').checked, paymentInfo: $('#gsInfo').value.trim(),
       trialEnabled: $('#gsTrial').checked, trialMinutes: Math.min(10080, Math.max(5, mins)),
-      supportWhatsapp: sup, waChannel: waCh, tgChannel: tgCh
+      supportWhatsapp: sup, waChannel: waCh, tgChannel: tgCh,
+      renewDays: Math.min(30, Math.max(1, Math.floor(num($('#gsRD').value)) || 3)), renewHour: Math.min(23, Math.max(0, Math.floor(num($('#gsRH').value)))),
+      vapidKey: vk
     }, { merge: true });
     toast('تم الحفظ');
   });
@@ -463,6 +476,7 @@ function methodForm(m) {
     <div class="field"><label>ملاحظة تظهر تحت التفاصيل (اختياري)</label><input id="mNote" maxlength="300" value="${esc(m?.note || '')}"></div>
     <div class="field"><label>صورة الإيصال</label><div class="chips">${[['none', 'بدون'], ['optional', 'اختياري'], ['required', 'إجباري']].map(([k, l]) => `<button type="button" class="chip ${(m?.receipt || 'none') === k ? 'on' : ''}" data-rc="${k}">${l}</button>`).join('')}</div></div>
     <div class="field"><label>${t('تظهر في')}</label><div class="chips">${[['subs', 'اشتراكات التجار'], ['store', 'متاجر التجار (للزبائن)']].map(([k, l]) => `<button type="button" class="chip ${(m?.useFor || ['subs']).includes(k) ? 'on' : ''}" data-uf="${k}">${t(l)}</button>`).join('')}</div></div>
+    <div class="field" id="mSC" ${(m?.useFor || ['subs']).includes('store') ? '' : 'hidden'}><label>${t('متاجر أي دولة تستعملها؟')}</label><div class="chips">${[['LY', 'ليبيا'], ['SA', 'السعودية']].map(([k, l]) => `<button type="button" class="chip ${!Array.isArray(m?.storeCountries) || m.storeCountries.includes(k) ? 'on' : ''}" data-sc="${k}">${t(l)}</button>`).join('')}</div></div>
     <div class="field"><label>العملات</label><div class="chips">${Object.keys(CURS).map(c => `<button type="button" class="chip ${!m?.currencies?.length || m.currencies.includes(c) ? 'on' : ''}" data-mc="${c}">${CURS[c].name}</button>`).join('')}</div></div>
     <div class="grid2 keep"><div class="field"><label>الترتيب</label><input id="mOrder" type="number" inputmode="numeric" dir="ltr" value="${m?.order ?? S.methods.length + 1}"></div>
       <label class="row" style="margin-top:22px"><span class="toggle"><input type="checkbox" id="mActive" ${m?.active === false ? '' : 'checked'}><span></span></span> ظاهرة للتجار</label></div>
@@ -472,7 +486,8 @@ function methodForm(m) {
   $('#mImg', el).onchange = async e => { try { setImg(await compressImage(e.target.files[0])); } catch (err) { toast(err.message, 'bad'); } e.target.value = ''; };
   $('#mImgDel', el).onclick = () => setImg('');
   $$('[data-mc]', el).forEach(x => x.onclick = () => x.classList.toggle('on'));
-  $$('[data-uf]', el).forEach(x => x.onclick = () => x.classList.toggle('on'));
+  $$('[data-uf]', el).forEach(x => x.onclick = () => { x.classList.toggle('on'); $('#mSC', el).hidden = !$('[data-uf="store"]', el).classList.contains('on'); });
+  $$('[data-sc]', el).forEach(x => x.onclick = () => x.classList.toggle('on'));
   $$('[data-rc]', el).forEach(x => x.onclick = () => $$('[data-rc]', el).forEach(y => y.classList.toggle('on', y === x)));
   $('#mAddF', el).onclick = () => $('#mFields', el).insertAdjacentHTML('beforeend', fieldRow());
   $('#mFields', el).addEventListener('click', e => { const d = e.target.closest('[data-del]'); if (d) d.closest('.frow').remove(); });
@@ -486,11 +501,12 @@ function methodForm(m) {
   });
   $('#mGo', el).onclick = e => busy(e.currentTarget, async () => {
     const fields = $$('.frow', el).map(r => ({ label: $('[data-fl]', r).value.trim(), value: $('[data-fv]', r).value.trim() })).filter(f => f.label && f.value).slice(0, 12);
-    const d = { name: $('#mName', el).value.trim(), image: image || '', fields, inputLabel: $('#mInput', el).value.trim() || 'رقم العملية', note: $('#mNote', el).value.trim(), currencies: $$('[data-mc].on', el).map(x => x.dataset.mc), receipt: $('[data-rc].on', el)?.dataset.rc || 'none', useFor: $$('[data-uf].on', el).map(x => x.dataset.uf), order: Math.floor(num($('#mOrder', el).value)), active: $('#mActive', el).checked };
+    const d = { name: $('#mName', el).value.trim(), image: image || '', fields, inputLabel: $('#mInput', el).value.trim() || 'رقم العملية', note: $('#mNote', el).value.trim(), currencies: $$('[data-mc].on', el).map(x => x.dataset.mc), receipt: $('[data-rc].on', el)?.dataset.rc || 'none', useFor: $$('[data-uf].on', el).map(x => x.dataset.uf), storeCountries: $$('[data-sc].on', el).map(x => x.dataset.sc), order: Math.floor(num($('#mOrder', el).value)), active: $('#mActive', el).checked };
     if (!d.name) throw new Error(t('اكتب اسم الطريقة.'));
     if (!fields.length) throw new Error(t('عبّي حقل واحد على الأقل (الاسم والقيمة).'));
     if (!$$('[data-mc].on', el).length) throw new Error(t('اختار عملة وحدة على الأقل.'));
     if (!d.useFor.length) throw new Error(t('اختار وين تظهر الطريقة.'));
+    if (d.useFor.includes('store') && !d.storeCountries.length) throw new Error(t('اختار دولة وحدة على الأقل لمتاجرها.'));
     await setDoc(ed ? doc(db, 'paymentMethods', m.id) : doc(collection(db, 'paymentMethods')), d);
     md.close(); toast('تم حفظ طريقة الدفع');
   });
@@ -500,6 +516,9 @@ function methodForm(m) {
 const R = id => S.requests.find(r => r.id === id);
 const ACTS = {
   ...ADMIN_STORE_ACTS,
+  pushOn: (id, b) => pushAction('on', b, () => render()),
+  pushOff: (id, b) => pushAction('off', b, () => render()),
+  pushTest: (id, b) => busy(b, async () => { const r = await apiPost('/a/push/test'); toast(r.sent ? t('وصل الإشعار؟ لو لا، تأكد إنك فعّلت الإشعارات على هذا الجهاز.') : t('ما فيش جهاز مفعّل عليه الإشعارات. فعّلها من الصفحة الرئيسية أولاً.'), r.sent ? 'ok' : 'bad'); }),
   copy: (id, b) => copyText(b.dataset.v),
   approve: id => R(id) && approve(R(id)),
   receipt: id => R(id) && showReceipt(R(id)),

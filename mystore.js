@@ -1,8 +1,8 @@
 // ملفي — متجر التاجر: الإنشاء، المنتجات، التصميم، الطلبات، المحفظة
 import {
   db, $, $$, esc, num, icon, toast, modal, confirmBox, busy, empty, skeleton, fmtDate, fmtShort, ago, tsMs, DAY, addMonths, monthsTxt,
-  normPhone, waLink, copyText, compressImage, safeImg, apiPost, storeUrl, ROOT_DOMAIN, t, isEN,
-  collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, getDoc, serverTimestamp
+  normPhone, waLink, copyText, compressImage, safeImg, apiPost, storeUrl, ROOT_DOMAIN, t, isEN, pushCardHTML,
+  collection, doc, onSnapshot, query, where, setDoc, getDoc
 } from './core.js';
 import { TEMPLATES, PALETTES, FONTS, CARDS, CORNERS, SECTIONS, CAT_ICONS, normDesign, normSections, colorsOf, ic as sic } from './store-theme.js';
 
@@ -17,7 +17,6 @@ const money = (n, s = sym()) => `⁦${(Math.round((+n || 0) * 100) / 100).toLoca
 const round2 = n => Math.round((+n || 0) * 100) / 100;
 const uid = () => A.uid();
 const sref = () => doc(db, 'stores', uid());
-const iref = id => doc(db, 'stores', uid(), 'items', id);
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'email', 'smtp', 'ftp', 'cdn', 'static', 'assets', 'img', 'images', 'store', 'stores', 'shop', 'help', 'support', 'status', 'blog', 'docs', 'dev', 'test', 'staging', 'beta', 'malafy', 'malafi', 'ns1', 'ns2', 'root', 'billing', 'pay', 'payment', 'payments', 'secure', 'login', 'account', 'accounts', 'dashboard', 'panel'];
 const slugOk = s => /^[a-z0-9](?:[a-z0-9-]{1,28})[a-z0-9]$/.test(s) && !s.includes('--') && !RESERVED.includes(s);
 const monthKey = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
@@ -109,18 +108,24 @@ function computeStock(it) {
 }
 async function syncStock() {
   if (!M.store || !storeAllowed() || !A.loaded()) return;
+  const diff = [];
   for (const it of M.items) {
     const st = computeStock(it);
     const cur = {}; Object.keys(st).forEach(k => cur[k] = it[k] ?? null);
-    if (JSON.stringify(cur) !== JSON.stringify(st)) { try { await updateDoc(iref(it.id), st); } catch (e) { console.warn('sync', e); } }
+    if (JSON.stringify(cur) !== JSON.stringify(st)) diff.push({ id: it.id, ...st });
   }
+  if (!diff.length || M.syncing) return;
+  M.syncing = true;
+  try { for (let i = 0; i < diff.length; i += 60) await apiPost('/m/items/sync', { items: diff.slice(i, i + 60) }); }
+  catch (e) { console.warn('sync', e); }
+  finally { M.syncing = false; }
 }
 
 /* ===================== الواجهة: الهيكل ===================== */
-const SUBS = [['', 'home', 'متجري'], ['orders', 'receipt', 'الطلبات'], ['items', 'box', 'المنتجات'], ['design', 'palette', 'التصميم'], ['wallet', 'wallet', 'المحفظة'], ['settings', 'sliders', 'الإعدادات']];
+const SUBS = [['', 'home', 'متجري'], ['orders', 'receipt', 'الطلبات'], ['cats', 'layers', 'الأقسام'], ['items', 'box', 'المنتجات'], ['design', 'palette', 'التصميم'], ['wallet', 'wallet', 'المحفظة'], ['settings', 'sliders', 'الإعدادات']];
 function subnav(cur) {
   const n = todo().length;
-  return `<div class="chips scrollx rv" style="margin-bottom:18px">${SUBS.map(([k, i, l]) => `<a class="chip ${cur === k ? 'on' : ''}" href="#store${k ? '/' + k : ''}" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">${icon(i)}${l}${k === 'orders' && n ? ` <b class="sbadge">${n}</b>` : ''}</a>`).join('')}</div>`;
+  return `<div class="chips scrollx rv" style="margin-bottom:18px">${SUBS.map(([k, i, l]) => `<a class="chip ${cur === k ? 'on' : ''}" href="#store${k ? '/' + k : ''}" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">${icon(i)}${k === 'cats' ? `<span data-raw>${isEN ? 'Categories' : 'الأقسام'}</span>` : l}${k === 'orders' && n ? ` <b class="sbadge">${n}</b>` : ''}</a>`).join('')}</div>`;
 }
 export function storeView(sub) {
   const view = A.view;
@@ -130,7 +135,7 @@ export function storeView(sub) {
     if (!allowed) { view.innerHTML = lockedHTML(); return; }
     return wizardView();
   }
-  const fns = { '': dashView, orders: ordersView, items: itemsView, design: designView, wallet: walletView, settings: settingsView };
+  const fns = { '': dashView, orders: ordersView, cats: catsView, items: itemsView, design: designView, wallet: walletView, settings: settingsView };
   (fns[sub] || dashView)();
 }
 function lockedHTML() {
@@ -154,7 +159,9 @@ function dashView() {
   const awaiting = M.open.filter(o => o.status === 'awaiting').length;
   const why = closedReason();
   const checklist = [
+    [(s.categories || []).length > 0, 'أضف أقسام متجرك', '#store/cats'],
     [M.items.length > 0, 'أضف أول منتج للمتجر', '#store/items'],
+    [storeMethods().length > 0 && (!Array.isArray(s.payMethods) || s.payMethods.length > 0), 'اختار طرق الدفع اللي تظهر في متجرك', '#store/settings'],
     [!!s.logo, 'ارفع شعار المتجر', '#store/design'],
     [!!(M.priv?.payout?.details), 'حدد وين توصلك أرباحك', '#store/settings'],
     [!!s.info?.whatsapp, 'أضف رقم واتساب المتجر', '#store/design']
@@ -178,13 +185,17 @@ function dashView() {
     <a class="mini" href="#store/wallet"><small>${t('قابل للسحب')}</small><b class="num t-ok">${money(w.available)}</b></a>
     <a class="mini" href="#store/wallet"><small>${t('رصيد معلّق')}</small><b class="num">${money(w.pending)}</b></a>
   </div>
+  ${pushCardHTML(t('فعّل الإشعارات باش يوصلك تنبيه أول ما يجي طلب جديد، أو بلاغ من زبون، أو تتحول أرباحك.'))}
+  <div style="height:16px"></div>
   ${checklist.length ? `<section class="card rv" style="margin-bottom:16px"><div class="chead"><h2>${t('كمّل تجهيز متجرك')}</h2></div><div class="rems">${checklist.map(([, l, h]) => `<a class="rem" href="${h}" style="grid-template-columns:auto 1fr auto;text-decoration:none;color:inherit"><span class="dot"></span><b style="font-size:14px">${t(l)}</b>${icon('arrow')}</a>`).join('')}</div></section>` : ''}
   <section class="card rv"><div class="chead"><h2>${t('آخر الطلبات')}</h2><a class="link" href="#store/orders">${t('عرض الكل')}</a></div>
     ${os.length ? `<div class="oplist">${os.slice(0, 5).map(orderRow).join('')}</div>` : empty('receipt', t('ما فيش طلبات للحين. شارك رابط متجرك!'))}</section>`;
   const tg = $('#stOpen');
   if (tg) tg.onchange = async () => {
-    try { await updateDoc(sref(), { status: tg.checked ? 'active' : 'paused', updatedAt: Date.now() }); toast(tg.checked ? t('المتجر يستقبل الطلبات') : t('تم إيقاف استقبال الطلبات')); }
+    tg.disabled = true;
+    try { await apiPost('/m/store/save', { status: tg.checked ? 'active' : 'paused' }); toast(tg.checked ? t('المتجر يستقبل الطلبات') : t('تم إيقاف استقبال الطلبات')); }
     catch (e) { tg.checked = !tg.checked; toast(e.message, 'bad'); }
+    tg.disabled = false;
   };
 }
 function orderRow(o) {
@@ -255,24 +266,29 @@ async function orderDetails(o) {
 function itemsView() {
   const list = [...M.items].sort((a, b) => num(a.order) - num(b.order) || String(a.name).localeCompare(String(b.name), 'ar'));
   const cats = M.store.categories || [];
+  const noCat = list.filter(it => !cats.some(c => c.id === it.cat)).length;
   A.view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('منتجات المتجر')}</h1><p>${t('اربط منتجات المتجر بمخزونك، والتسليم يصير تلقائي')}</p></div>
     <button class="btn amber" data-act="stItemNew">${icon('plus')} ${t('منتج جديد')}</button></div>
   ${subnav('items')}
+  ${!cats.length ? `<div class="card rv" style="margin-bottom:16px;border-color:rgba(245,158,11,.45)"><p>${icon('alert')} ${t('قبل ما تضيف منتجات، أنشئ قسم واحد على الأقل.')} <a class="link" href="#store/cats">${t('الأقسام')}</a></p></div>` : ''}
+  ${noCat ? `<div class="card rv" style="margin-bottom:16px;border-color:rgba(239,68,68,.4)"><p class="t-bad">${icon('alert')} ${noCat} ${t('منتج بدون قسم. عدّلهم واختار لهم قسم.')}</p></div>` : ''}
   ${list.length ? `<div class="plist">${list.map(it => {
     const img = safeImg(it.image);
     const from = priceFrom(it);
     const out = (it.stock || 0) < 1;
     return `<article class="card pcard rv" style="${it.active === false ? 'opacity:.6' : ''}">
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start">${img ? `<img src="${img}" alt="" style="width:64px;height:64px;border-radius:14px;object-fit:cover;flex:none">` : `<span class="fic" style="width:64px;height:64px;border-radius:14px">${icon(TYPE_IC[it.type])}</span>`}
-        <div class="fmid"><b data-raw>${esc(it.name)}</b><small>${t(TYPE_LBL[it.type])}${it.cat && cats.find(c => c.id === it.cat) ? ` · <span data-raw>${esc(cats.find(c => c.id === it.cat).name)}</span>` : ''}</small>
+        <div class="fmid"><b data-raw>${esc(it.name)}</b><small>${t(TYPE_LBL[it.type])} · ${cats.find(c => c.id === it.cat) ? `<span data-raw>${esc(cats.find(c => c.id === it.cat).name)}</span>` : `<span class="t-bad">${t('بدون قسم')}</span>`}</small>
         <div class="row" style="margin-top:6px"><b class="num" style="color:var(--amber-t)">${from.many ? t('من') + ' ' : ''}${money(from.min)}</b>${it.type === 'manual' ? '' : `<span class="badge ${out ? 'bad' : 'ok'}">${out ? t('نفد') : `${it.stock} ${t('متاح')}`}</span>`}${it.featured ? `<span class="badge warn">${t('مميز')}</span>` : ''}${it.active === false ? `<span class="badge off">${t('مخفي')}</span>` : ''}</div></div></div>
       ${stockHint(it)}
       <div class="row"><button class="btn ghost sm" data-act="stItemEdit" data-id="${esc(it.id)}">${icon('edit')} ${t('تعديل')}</button><label class="row small"><span class="toggle"><input type="checkbox" data-itact="${esc(it.id)}" ${it.active === false ? '' : 'checked'}><span></span></span>${t('ظاهر')}</label><span class="spacer"></span><button class="iconbtn sm" data-act="stItemDel" data-id="${esc(it.id)}" aria-label="${t('حذف')}">${icon('trash')}</button></div>
     </article>`;
   }).join('')}</div>` : `<div class="card rv">${empty('box', t('أضف منتجات لمتجرك: ملفات حسابات، أكواد، أرقام، أو خدمة يدوية مثل الشحن بالـ ID.'), `<button class="btn amber" data-act="stItemNew">${icon('plus')} ${t('منتج جديد')}</button>`)}</div>`}`;
   $$('[data-itact]').forEach(x => x.onchange = async () => {
-    try { await updateDoc(iref(x.dataset.itact), { active: x.checked, updatedAt: Date.now() }); } catch (e) { x.checked = !x.checked; toast(e.message, 'bad'); }
+    x.disabled = true;
+    try { await apiPost('/m/items/active', { id: x.dataset.itact, active: x.checked }); } catch (e) { x.checked = !x.checked; toast(e.message, 'bad'); }
+    x.disabled = false;
   });
 }
 function stockHint(it) {
@@ -289,14 +305,18 @@ function priceFrom(it) {
   l = l.map(num).filter(x => x > 0);
   return { min: l.length ? Math.min(...l) : 0, many: new Set(l).size > 1 };
 }
+function needCats() {
+  if ((M.store.categories || []).length) return true;
+  toast(t('أنشئ قسم واحد على الأقل قبل ما تضيف منتجات.'), 'bad'); location.hash = '#store/cats'; return false;
+}
 function itemNew() {
-  if (!guard()) return;
+  if (!guard() || !needCats()) return;
   const m = modal(t('منتج جديد'), `<div class="rems">${[['account', 'tv', 'ملفات حساب', 'Netflix، Shahid… الزبون يختار المدة ويستلم الملف تلقائياً'], ['code', 'ticket', 'أكواد', 'ببجي، فري فاير، بطاقات… الكود يتسلّم تلقائياً'], ['number', 'phone', 'أرقام', 'أرقام تفعيل، الزبون يختار الرقم أو الدولة'], ['manual', 'bolt', 'خدمة يدوية', 'شحن بالـ ID أو أي خدمة تسلّمها أنت']].map(([k, i, l, d]) =>
     `<button class="rem" data-pick="${k}" style="grid-template-columns:auto 1fr auto;text-align:start;color:inherit;cursor:pointer;width:100%"><span class="fic">${icon(i)}</span><div><b>${t(l)}</b><small>${t(d)}</small></div>${icon('arrow')}</button>`).join('')}</div>`);
   $$('[data-pick]', m.el).forEach(b => b.onclick = () => { m.close(); itemForm({ type: b.dataset.pick }); });
 }
 function itemForm(it) {
-  if (!guard()) return;
+  if (!guard() || !needCats()) return;
   const ed = !!it.id, S = A.S, type = it.type, cats = M.store.categories || [];
   let image = safeImg(it.image);
   const accs = S.products.filter(p => p.type === 'account');
@@ -334,7 +354,7 @@ function itemForm(it) {
     <div class="field"><label>${t('اسم المنتج في المتجر')}</label><input id="ifName" maxlength="80" value="${esc(it.name || '')}"></div>
     <div class="field"><label>${t('الوصف')}</label><textarea id="ifDesc" maxlength="800" rows="3">${esc(it.desc || '')}</textarea></div>
     ${body}
-    <div class="grid2 keep"><div class="field"><label>${t('القسم')}</label><select id="ifCat"><option value="">${t('بدون قسم')}</option>${cats.map(c => `<option value="${esc(c.id)}" ${it.cat === c.id ? 'selected' : ''} data-raw>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="grid2 keep"><div class="field"><label>${t('القسم')}</label><select id="ifCat">${cats.some(c => c.id === it.cat) ? '' : `<option value="" selected disabled>${t('اختار القسم…')}</option>`}${cats.map(c => `<option value="${esc(c.id)}" ${it.cat === c.id ? 'selected' : ''} data-raw>${esc(c.name)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('الترتيب')}</label><input id="ifOrder" type="number" dir="ltr" value="${it.order ?? M.items.length + 1}"></div></div>
     <div class="field"><label>${t('ملاحظة للزبون (اختياري)')}</label><input id="ifNote" maxlength="300" value="${esc(it.note || '')}" placeholder="${t('مثلاً: التسليم خلال ساعة')}"></div>
     <div class="row" style="margin-bottom:16px"><label class="row small"><span class="toggle"><input type="checkbox" id="ifFeat" ${it.featured ? 'checked' : ''}><span></span></span>${t('مميز (يظهر فوق)')}</label><label class="row small"><span class="toggle"><input type="checkbox" id="ifAct" ${it.active === false ? '' : 'checked'}><span></span></span>${t('ظاهر للزبائن')}</label></div>
@@ -355,6 +375,7 @@ function itemForm(it) {
       note: $('#ifNote', el).value.trim().slice(0, 300), order: Math.floor(num($('#ifOrder', el).value)), featured: $('#ifFeat', el).checked, active: $('#ifAct', el).checked, updatedAt: Date.now()
     };
     if (!d.name) throw new Error(t('اكتب اسم المنتج.'));
+    if (!cats.some(c => c.id === d.cat)) throw new Error(t('اختار قسم المنتج.'));
     if (type === 'account') {
       const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
       d.productIds = accs.filter(p => names.includes(p.name)).map(p => p.id).slice(0, 10);
@@ -376,8 +397,7 @@ function itemForm(it) {
       if (!d.packs.length) throw new Error(t('أضف باقة وحدة على الأقل (الاسم والسعر).'));
     }
     Object.assign(d, computeStock({ ...it, ...d }));
-    const ref = ed ? iref(it.id) : doc(collection(db, 'stores', uid(), 'items'));
-    await setDoc(ref, { ...d, createdAt: it.createdAt || Date.now() });
+    await apiPost('/m/items/save', { id: ed ? it.id : '', item: d });
     m.close(); toast(t('تم الحفظ'));
   });
 }
@@ -386,7 +406,7 @@ const fieldRow = f => `<div class="frow fieldrow"><input class="inp" data-fl max
 async function itemDel(it) {
   if (!guard()) return;
   if (!await confirmBox(`${t('حذف')} "<span data-raw>${esc(it.name)}</span>" ${t('من المتجر؟ المخزون نفسه ما يتأثرش.')}`, { ok: t('حذف'), danger: true })) return;
-  try { await deleteDoc(iref(it.id)); toast(t('تم الحذف')); } catch (e) { toast(e.message, 'bad'); }
+  try { await apiPost('/m/items/delete', { id: it.id }); toast(t('تم الحذف')); } catch (e) { toast(e.message, 'bad'); }
 }
 function guard() {
   if (!storeAllowed()) { toast(t('التعديل على المتجر يحتاج خطة فيها متجر واشتراك مفعّل.'), 'bad'); return false; }
@@ -487,10 +507,10 @@ async function edSave(btn) {
   await busy(btn, async () => {
     if (!d.name.trim()) throw new Error(t('اكتب اسم المتجر.'));
     const clean = { ...d.info, faq: (d.info.faq || []).map(f => ({ q: String(f.q || '').trim().slice(0, 160), a: String(f.a || '').trim().slice(0, 800) })).filter(f => f.q && f.a), socials: Object.fromEntries(Object.entries(d.info.socials || {}).map(([k, v]) => [k, String(v || '').trim().slice(0, 200)]).filter(([, v]) => v)) };
-    const upd = { name: d.name.trim().slice(0, 40), design: d.design, sections: d.sections, info: clean, updatedAt: Date.now() };
-    if (d.logo !== (s.logo || '')) { upd.logo = d.logo; upd.logoV = d.logo ? Date.now() : 0; }
-    if (d.cover !== (s.cover || '')) { upd.cover = d.cover; upd.coverV = d.cover ? Date.now() : 0; }
-    await updateDoc(sref(), upd);
+    const upd = { name: d.name.trim().slice(0, 40), design: d.design, sections: d.sections, info: clean };
+    if (d.logo !== (s.logo || '')) upd.logo = d.logo;
+    if (d.cover !== (s.cover || '')) upd.cover = d.cover;
+    await apiPost('/m/store/save', upd);
     toast(t('تم الحفظ، التغييرات تظهر في متجرك خلال ثواني'));
     closeEditor(true);
   });
@@ -522,7 +542,7 @@ function walletView() {
 /* ===================== الإعدادات ===================== */
 function settingsView() {
   const s = M.store, p = M.priv?.payout || {};
-  const cats = s.categories || [];
+  const pms = storeMethods(), chosen = Array.isArray(s.payMethods) ? s.payMethods : null;
   A.view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('إعدادات المتجر')}</h1></div></div>
   ${subnav('settings')}
@@ -531,9 +551,10 @@ function settingsView() {
       <div class="slug"><input id="ssSlug" maxlength="30" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(s.slug)}"><span>.${ROOT_DOMAIN}</span></div><p class="hint" id="ssSlugMsg" style="margin:6px 0 12px"></p>
       <button class="btn ghost" id="ssSlugGo">${t('تغيير الرابط')}</button>
       <p class="hint" style="margin-top:10px">${t('الدولة')}: <b>${t(s.country === 'SA' ? 'السعودية' : 'ليبيا')}</b> · ${t('العملة')}: <b>${t(CUR[s.currency]?.[1] || s.currency)}</b> ${t('(ما تتغيرش)')}</p></section>
-    <section class="card rv"><div class="shead"><h2>${t('أقسام المتجر')}</h2><p>${t('مثلاً: اشتراكات، شحن ألعاب، أرقام')}</p></div>
-      <div id="ssCats">${cats.map(catRow).join('')}</div>
-      <div class="row"><button class="btn ghost sm" id="ssCatAdd">${icon('plus')} ${t('قسم')}</button><span class="spacer"></span><button class="btn amber" id="ssCatSave">${t('حفظ الأقسام')}</button></div></section>
+    <section class="card rv"><div class="shead"><h2>${t('طرق الدفع في متجرك')}</h2><p>${t('الزبون يدفع لحسابات ملفي، وملفي تأكد الدفع وتحوّل أرباحك. اختار الطرق اللي تظهر لزباينك.')}</p></div>
+      ${pms.length ? `<div class="rems" id="ssPms">${pms.map(m => `<label class="rem" style="grid-template-columns:auto 1fr auto;cursor:pointer">${safeImg(m.image) ? `<img src="${safeImg(m.image)}" alt="" style="width:36px;height:36px;border-radius:10px;object-fit:cover">` : `<span class="fic">${icon('card')}</span>`}<div><b data-raw>${esc(m.name)}</b><small>${esc((m.currencies || []).join(' · '))}</small></div><span class="toggle"><input type="checkbox" data-pm="${esc(m.id)}" ${!chosen || chosen.includes(m.id) ? 'checked' : ''}><span></span></span></label>`).join('')}</div>
+      <button class="btn amber" id="ssPmGo" style="margin-top:12px">${t('حفظ طرق الدفع')}</button>`
+      : `<p class="hint">${t('الإدارة ما فعّلتش طرق دفع لمتاجر')} ${t(s.country === 'SA' ? 'السعودية' : 'ليبيا')} ${t('للحين. أول ما تتفعّل تظهر هنا.')}</p>`}</section>
     <section class="card rv"><div class="shead"><h2>${t('وين توصلك أرباحك')}</h2><p>${t('الإدارة تحوّل التسوية الأسبوعية على هذي البيانات')}</p></div>
       <div class="field"><label>${t('الطريقة')}</label><input id="ssPm" maxlength="60" value="${esc(p.method || '')}" placeholder="${t('مثلاً: تحويل مصرفي، ليبيانا، USDT')}"></div>
       <div class="field"><label>${t('اسم صاحب الحساب')}</label><input id="ssPn" maxlength="80" value="${esc(p.name || '')}"></div>
@@ -548,20 +569,14 @@ function settingsView() {
     if (v === s.slug) return;
     if (!slugOk(v)) throw new Error(t('الرابط غير صالح أو محجوز.'));
     if (!await confirmBox(t('تغيير الرابط يخلي الرابط القديم ما يشتغلش، والزبائن لازم ياخذوا الجديد. متأكد؟'), { ok: t('غيّر') })) return;
-    const ex = await getDoc(doc(db, 'slugs', v));
-    if (ex.exists()) throw new Error(t('الرابط هذا مأخوذ، جرّب غيره.'));
-    const b = writeBatch(db);
-    b.set(doc(db, 'slugs', v), { storeId: uid() });
-    b.delete(doc(db, 'slugs', s.slug));
-    b.update(sref(), { slug: v, updatedAt: Date.now() });
-    await b.commit(); toast(t('تم تغيير الرابط'));
+    await apiPost('/m/store/slug', { slug: v }); toast(t('تم تغيير الرابط'));
   });
-  $('#ssCatAdd').onclick = () => { if ($$('.catrow').length < 12) $('#ssCats').insertAdjacentHTML('beforeend', catRow({})); };
-  $('#ssCats').addEventListener('click', e => { const d = e.target.closest('[data-rm]'); if (d) d.closest('.frow').remove(); });
-  $('#ssCatSave').onclick = e => busy(e.currentTarget, async () => {
+  const pg = $('#ssPmGo');
+  if (pg) pg.onclick = e => busy(e.currentTarget, async () => {
     if (!guard()) return;
-    const list = $$('.catrow').map(r => ({ id: r.dataset.cid || 'c' + Math.random().toString(36).slice(2, 9), name: $('[data-cn]', r).value.trim().slice(0, 30), icon: $('[data-ci]', r).value })).filter(c => c.name).slice(0, 12);
-    await updateDoc(sref(), { categories: list, updatedAt: Date.now() }); toast(t('تم الحفظ'));
+    const on = $$('[data-pm]').filter(x => x.checked).map(x => x.dataset.pm);
+    if (!on.length) throw new Error(t('اختار طريقة دفع وحدة على الأقل، وإلا الزبائن ما يقدروش يطلبوا.'));
+    await apiPost('/m/store/save', { payMethods: on }); toast(t('تم الحفظ'));
   });
   $('#ssPayGo').onclick = e => busy(e.currentTarget, async () => {
     const d = { method: $('#ssPm').value.trim().slice(0, 60), name: $('#ssPn').value.trim().slice(0, 80), details: $('#ssPd').value.trim().slice(0, 300) };
@@ -569,7 +584,78 @@ function settingsView() {
     await setDoc(doc(db, 'storePrivate', uid()), { payout: d, updatedAt: Date.now() }); toast(t('تم الحفظ'));
   });
 }
-const catRow = c => `<div class="frow catrow" data-cid="${esc(c.id || '')}"><input class="inp" data-cn maxlength="30" placeholder="${t('اسم القسم')}" value="${esc(c.name || '')}"><select class="inp" data-ci>${CAT_ICONS.map(([k, l]) => `<option value="${k}" ${c.icon === k ? 'selected' : ''}>${t(l)}</option>`).join('')}</select><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
+// طرق الدفع اللي فعّلتها الإدارة للمتاجر في دولة المتجر
+function storeMethods() {
+  const s = M.store; if (!s) return [];
+  return (A.S.allMethods || []).filter(m => m.active !== false && Array.isArray(m.useFor) && m.useFor.includes('store')
+    && (!Array.isArray(m.storeCountries) || m.storeCountries.includes(s.country))
+    && (!Array.isArray(m.currencies) || !m.currencies.length || m.currencies.includes(s.currency) || m.currencies.includes('USDT')));
+}
+
+/* ===================== الأقسام ===================== */
+const newCid = () => 'c' + Math.random().toString(36).slice(2, 10);
+function catsView() {
+  const cats = M.store.categories || [];
+  const cnt = id => M.items.filter(i => i.cat === id).length;
+  A.view.innerHTML = `
+  <div class="pagehead rv"><div><h1>${t('أقسام المتجر')}</h1><p>${t('كل منتج لازم يكون في قسم. مثلاً: اشتراكات، شحن ألعاب، أرقام')}</p></div>
+    ${cats.length < 12 ? `<button class="btn amber" data-act="stCatNew">${icon('plus')} ${t('قسم جديد')}</button>` : ''}</div>
+  ${subnav('cats')}
+  ${cats.length ? `<section class="card rv"><div class="rems">${cats.map((c, i) => `<div class="rem catl">
+      <span class="fic">${sic(c.icon)}</span>
+      <div><b data-raw>${esc(c.name)}</b><small>${cnt(c.id)} ${t('منتج')}</small></div>
+      <div class="row catacts">
+        <button class="iconbtn sm" data-act="stCatMv" data-id="${i}:-1" ${i === 0 ? 'disabled' : ''} aria-label="${t('فوق')}">${icon('up')}</button>
+        <button class="iconbtn sm" data-act="stCatMv" data-id="${i}:1" ${i === cats.length - 1 ? 'disabled' : ''} aria-label="${t('تحت')}">${icon('down')}</button>
+        <button class="iconbtn sm" data-act="stCatEdit" data-id="${esc(c.id)}" aria-label="${t('تعديل')}">${icon('edit')}</button>
+        <button class="iconbtn sm" data-act="stCatDel" data-id="${esc(c.id)}" aria-label="${t('حذف')}">${icon('trash')}</button>
+      </div></div>`).join('')}</div></section>
+    <p class="hint rv" style="margin-top:10px">${t('الترتيب هنا هو نفس ترتيب الأقسام في متجرك. القسم اللي فيه منتجات ما ينحذفش.')}</p>`
+    : `<div class="card rv">${empty('layers', t('ما عندكش أقسام. أنشئ أول قسم وبعدين أضف منتجاتك فيه.'), `<button class="btn amber" data-act="stCatNew">${icon('plus')} ${t('قسم جديد')}</button>`)}</div>`}`;
+}
+async function saveCats(list) {
+  const r = await apiPost('/m/store/cats', { categories: list });
+  if (M.store && r?.categories) M.store.categories = r.categories;
+  if (location.hash.startsWith('#store/cats')) catsView();
+}
+function catForm(c) {
+  if (!guard()) return;
+  const ed = !!c;
+  let ic = c?.icon || 'star';
+  const m = modal(ed ? t('تعديل القسم') : t('قسم جديد'), `
+    <div class="field"><label>${t('اسم القسم')}</label><input id="cfName" maxlength="30" value="${esc(c?.name || '')}" placeholder="${t('مثلاً: اشتراكات')}"></div>
+    <div class="field"><label>${t('الأيقونة')}</label><div class="chips" id="cfIcons">${CAT_ICONS.map(([k, l]) => `<button type="button" class="chip ${ic === k ? 'on' : ''}" data-ic="${k}" title="${t(l)}" aria-label="${t(l)}" style="display:inline-flex;align-items:center;gap:6px">${sic(k)}${t(l)}</button>`).join('')}</div></div>
+    <p class="err" id="cfErr"></p>
+    <div class="mfoot"><button class="btn amber" id="cfGo">${icon('check')} ${t('حفظ')}</button></div>`);
+  const el = m.el;
+  $$('[data-ic]', el).forEach(b => b.onclick = () => { ic = b.dataset.ic; $$('[data-ic]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  setTimeout(() => $('#cfName', el).focus(), 50);
+  $('#cfGo', el).onclick = e => busy(e.currentTarget, async () => {
+    const name = $('#cfName', el).value.trim().slice(0, 30);
+    if (!name) { $('#cfErr', el).textContent = t('اكتب اسم القسم.'); return; }
+    const cur = (M.store.categories || []).map(x => ({ ...x }));
+    if (cur.some(x => x.name === name && x.id !== c?.id)) { $('#cfErr', el).textContent = t('فيه قسم بنفس الاسم.'); return; }
+    if (ed) Object.assign(cur.find(x => x.id === c.id) || {}, { name, icon: ic });
+    else { if (cur.length >= 12) throw new Error(t('أقصى حد 12 قسم.')); cur.push({ id: newCid(), name, icon: ic }); }
+    try { await saveCats(cur); } catch (er) { $('#cfErr', el).textContent = er.message; return; }
+    m.close(); toast(t('تم الحفظ'));
+  });
+}
+async function catDel(id) {
+  if (!guard()) return;
+  const c = (M.store.categories || []).find(x => x.id === id); if (!c) return;
+  const n = M.items.filter(i => i.cat === id).length;
+  if (n) { toast(`${t('القسم فيه')} ${n} ${t('منتج. انقلهم لقسم ثاني أو احذفهم قبل ما تحذف القسم.')}`, 'bad'); return; }
+  if (!await confirmBox(`${t('حذف قسم')} "<span data-raw>${esc(c.name)}</span>"؟`, { ok: t('حذف'), danger: true })) return;
+  try { await saveCats(M.store.categories.filter(x => x.id !== id)); toast(t('تم الحذف')); } catch (e) { toast(e.message, 'bad'); }
+}
+async function catMove(spec) {
+  if (!guard()) return;
+  const [i, d] = spec.split(':').map(Number), l = (M.store.categories || []).map(x => ({ ...x })), j = i + d;
+  if (j < 0 || j >= l.length) return;
+  [l[i], l[j]] = [l[j], l[i]];
+  try { await saveCats(l); } catch (e) { toast(e.message, 'bad'); }
+}
 
 /* ===================== إنشاء المتجر ===================== */
 function wizardView() {
@@ -614,23 +700,10 @@ async function createStore(btn) {
   const w = M.wiz;
   await busy(btn, async () => {
     if (!storeAllowed()) throw new Error(t('خطتك ما فيهاش متجر.'));
-    const T = TEMPLATES[w.template], now = Date.now(), cur = w.country === 'SA' ? 'SAR' : 'LYD';
-    const b = writeBatch(db);
-    b.set(doc(db, 'slugs', w.slug), { storeId: uid() });
-    b.set(sref(), {
-      ownerId: uid(), slug: w.slug, name: w.name.trim().slice(0, 40), country: w.country, currency: cur, status: 'active', suspended: false,
-      createdAt: serverTimestamp(), launchedAt: now, updatedAt: now,
-      design: { template: w.template, palette: T.palette, color: '', font: 'IBM Plex Sans Arabic', card: T.card, corner: T.corner, mode: T.mode },
-      sections: SECTIONS.map(([id]) => ({ id, on: true })), categories: [],
-      info: { heroTitle: w.name.trim().slice(0, 80), heroSub: '', announce: '', about: '', whatsapp: (A.S.profile.phone || '').slice(0, 20), floatWa: true, policy: '', faq: [], socials: {} },
-      logo: '', logoV: 0, cover: '', coverV: 0
-    });
-    b.update(doc(db, 'users', uid()), { currency: CUR[cur][0] });
-    try { await b.commit(); }
-    catch (e) { if (e?.code === 'permission-denied') throw new Error(t('الرابط تأخذ أو ما عندكش صلاحية. جرّب رابط ثاني.')); throw e; }
+    await apiPost('/m/store/create', { name: w.name.trim().slice(0, 40), country: w.country, slug: w.slug, template: w.template, phone: (A.S.profile.phone || '').slice(0, 20) });
     M.wiz = null;
-    toast(t('متجرك جاهز! أضف منتجاتك'));
-    location.hash = '#store/items';
+    toast(t('متجرك جاهز! ابدأ بإضافة أقسام متجرك'));
+    location.hash = '#store/cats';
   });
 }
 
@@ -643,6 +716,10 @@ export const STORE_ACTS = {
   stItemNew: () => itemNew(),
   stItemEdit: id => { const it = M.items.find(x => x.id === id); it && itemForm(it); },
   stItemDel: id => { const it = M.items.find(x => x.id === id); it && itemDel(it); },
+  stCatNew: () => catForm(null),
+  stCatEdit: id => { const c = (M.store.categories || []).find(x => x.id === id); c && catForm(c); },
+  stCatDel: id => catDel(id),
+  stCatMv: id => catMove(id),
   edTab: id => { M.edTab = id; $$('.ed-tabs button').forEach(b => b.classList.toggle('on', b.dataset.id === id)); edBody(); },
   edTpl: id => { const T = TEMPLATES[id]; Object.assign(M.ed.design, { template: id, palette: T.palette, color: '', card: T.card, corner: T.corner, mode: T.mode }); edBody(); pushPreview('/'); },
   edPal: id => { M.ed.design.palette = id; M.ed.design.color = ''; edBody(); pushPreview(); },
