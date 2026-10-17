@@ -14,7 +14,17 @@ const M = {
 const CUR = { LYD: ['د.ل', 'دينار ليبي'], SAR: ['ر.س', 'ريال سعودي'] };
 const sym = () => CUR[M.store?.currency]?.[0] || 'د.ل';
 const money = (n, s = sym()) => `⁦${(Math.round((+n || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })} ${esc(s)}⁩`;
+const minPay = () => Math.max(0, +A?.S?.platform?.minPayout?.[M.store?.currency] || 0);
 const wDays = () => Math.min(30, Math.max(1, Math.floor(+A?.S?.platform?.warrantyDays) || 7));
+function warrLine(o) {
+  const dl = o.deliveredAt, now = Date.now();
+  const hd = o.holdDays ?? wDays(), md = o.wDays ?? wDays();
+  if (md === 0) return t('بدون ضمان، والأرباح تتحول فوراً بعد التسليم.');
+  const parts = [];
+  if (hd > 0) parts.push(now < dl + hd * DAY ? `${t('ضمان ملفي لين')} ${fmtDate(dl + hd * DAY)}` : t('ضمان ملفي انتهى'));
+  if (md > hd) parts.push(now < dl + md * DAY ? `${t('ضمانك لين')} ${fmtDate(dl + md * DAY)}` : t('ضمانك انتهى'));
+  return parts.join(' · ');
+}
 const round2 = n => Math.round((+n || 0) * 100) / 100;
 const uid = () => A.uid();
 const sref = () => doc(db, 'stores', uid());
@@ -62,9 +72,10 @@ export function startStore() {
 }
 export function stopStore() { M.unsubs.forEach(u => u()); M.unsubs = []; M.store = undefined; M.items = []; M.open = []; M.hist = []; M.lastOrderIds = null; }
 const orders = () => { const m = new Map(); [...M.hist, ...M.open].forEach(o => m.set(o.id, o)); return [...m.values()].sort((a, b) => b.createdAt - a.createdAt); };
-const todo = () => M.open.filter(o => o.status === 'preparing' || o.status === 'problem');
+const todo = () => M.open.filter(o => o.status === 'preparing' || o.status === 'problem' || o.claim?.open);
+const stOf = o => o.claim?.open ? ['bad', 'بلاغ ضمان'] : (ORD_ST[o.status] || ['off', o.status]);
 function notifyNew() {
-  const ids = new Set(M.open.filter(o => o.status === 'preparing' || o.status === 'problem').map(o => o.id + o.status));
+  const ids = new Set(todo().map(o => o.id + o.status + (o.claim?.open ? 'c' : '')));
   if (M.lastOrderIds && [...ids].some(x => !M.lastOrderIds.has(x))) { toast(t('طلب جديد يحتاج تسليم في متجرك')); beep(); }
   M.lastOrderIds = ids;
 }
@@ -72,7 +83,7 @@ function beep() { try { const c = new (window.AudioContext || window.webkitAudio
 // للجرس في الأعلى
 export function storeBell() {
   const list = todo();
-  return { n: list.length, html: list.slice(0, 4).map(o => `<a class="bellitem soon" href="#store/orders"><b>${esc(o.customer?.name || '')} · #${esc(o.id)}</b><small>${o.status === 'problem' ? t('بلاغ من الزبون') : t('طلب للتسليم')}</small></a>`).join('') };
+  return { n: list.length, html: list.slice(0, 4).map(o => `<a class="bellitem soon" href="#store/orders"><b>${esc(o.customer?.name || '')} · #${esc(o.id)}</b><small>${o.claim?.open ? t('بلاغ ضمان') : o.status === 'problem' ? t('بلاغ من الزبون') : t('طلب للتسليم')}</small></a>`).join('') };
 }
 
 /* ===================== مزامنة المخزون مع المتجر ===================== */
@@ -200,7 +211,7 @@ function dashView() {
   };
 }
 function orderRow(o) {
-  const st = ORD_ST[o.status] || ['off', o.status];
+  const st = stOf(o);
   const what = (o.items || []).map(i => i.name + (i.qty > 1 ? ` ×${i.qty}` : '')).join('، ');
   return `<button type="button" class="op" data-act="stOrder" data-id="${esc(o.id)}" style="width:100%;background:none;border-inline:0;border-bottom:0;color:inherit;text-align:start;cursor:pointer">
     <div><b><span data-raw>${esc(o.customer?.name || '')}</span> <small class="dim num" style="display:inline">#${esc(o.id)}</small></b><small data-raw>${esc(what)}</small><small>${ago(o.createdAt)}</small></div>
@@ -210,7 +221,7 @@ function orderRow(o) {
 /* ===================== الطلبات ===================== */
 function ordersView() {
   const os = orders();
-  const tabs = { todo: o => ['preparing', 'problem'].includes(o.status), awaiting: o => o.status === 'awaiting', done: o => ['delivered', 'completed'].includes(o.status), all: () => true };
+  const tabs = { todo: o => ['preparing', 'problem'].includes(o.status) || !!o.claim?.open, awaiting: o => o.status === 'awaiting', done: o => ['delivered', 'completed'].includes(o.status), all: () => true };
   const list = os.filter(tabs[M.otab] || tabs.todo);
   A.view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('طلبات المتجر')}</h1><p>${t('الطلب يوصلك بعد ما ملفي تأكد الدفع')}</p></div></div>
@@ -221,7 +232,7 @@ function ordersView() {
   <p class="hint rv" style="margin-top:10px">${t('يظهر هنا طلبات الشهر هذا واللي قبله، والطلبات المفتوحة كلها.')}</p>`;
 }
 async function orderDetails(o) {
-  const st = ORD_ST[o.status] || ['off', o.status];
+  const st = stOf(o);
   const paid = !['awaiting', 'rejected', 'cancelled'].includes(o.status);
   let sec = null;
   if (paid) { try { const s = await getDoc(doc(db, 'orderSecrets', o.id)); sec = s.exists() ? s.data() : null; } catch { } }
@@ -230,7 +241,11 @@ async function orderDetails(o) {
   const m = modal(`${t('طلب')} #${esc(o.id)}`, `
     <div class="row" style="margin-bottom:14px"><span class="badge ${st[0]}">${t(st[1])}</span><span class="spacer"></span><small class="dim">${fmtDate(o.createdAt)} · ${ago(o.createdAt)}</small></div>
     <div class="summary"><div><span>${t('الزبون')}</span><b data-raw>${esc(o.customer?.name)}</b></div><div><span>${t('واتساب')}</span><b class="ltr" data-raw>${esc(o.customer?.phone)}</b></div></div>
-    ${o.deliveredAt && ['delivered', 'problem'].includes(o.status) ? `<p class="hint" style="margin-bottom:14px">${icon('shield')} ${Date.now() < o.deliveredAt + wDays() * DAY ? `${t('الضمان شغال لين')} ${fmtDate(o.deliveredAt + wDays() * DAY)}${o.received ? ' · ' + t('الزبون أكد إن كل شي تمام') : ''}` : t('الضمان انتهى')}</p>` : ''}
+    ${o.deliveredAt ? `<p class="hint" style="margin-bottom:14px">${icon('shield')} ${warrLine(o)}${o.received ? ' · ' + t('الزبون أكد إن كل شي تمام') : ''}</p>` : ''}
+    ${o.claim ? `<div class="card" style="padding:14px;margin-bottom:14px;border-color:rgba(239,68,68,.4)"><b class="t-bad">${icon('alert')} ${t('بلاغ على ضمانك')}</b>${o.claim.open ? '' : ` <span class="badge ok">${t('انحل')}</span>`}<p data-raw style="margin:6px 0">${esc(o.claim.text)}</p>
+      <p class="small muted" style="margin-bottom:6px">${t('ضمان ملفي خلص وأرباح الطلب اتحولتلك، والزبون يبلّغ على ضمانك أنت. تواصل معاه وحل المشكلة.')}</p>
+      ${o.claim.reply ? `<p class="small muted">${t('ردك')}: <span data-raw>${esc(o.claim.reply)}</span></p>` : ''}
+      ${o.claim.open ? `<div class="field" style="margin:10px 0 8px"><textarea id="odReply" maxlength="800" placeholder="${t('ردك على الزبون…')}"></textarea></div><button class="btn ghost sm" id="odReplyBtn">${icon('send')} ${t('إرسال الرد')}</button>` : ''}</div>` : ''}
     ${o.status === 'awaiting' ? `<p class="hint" style="margin-bottom:14px">${t('بانتظار تأكيد الدفع من ملفي. ما تسلّمش حاجة قبل التأكيد.')}</p>` : ''}
     ${o.problem ? `<div class="card" style="padding:14px;margin-bottom:14px;border-color:rgba(239,68,68,.4)"><b class="t-bad">${icon('alert')} ${o.problem.by === 'system' ? t('ملاحظة النظام') : t('بلاغ الزبون')}</b><p data-raw style="margin:6px 0">${esc(o.problem.text)}</p>
       ${o.problem.reply ? `<p class="small muted">${t('ردك')}: <span data-raw>${esc(o.problem.reply)}</span></p>` : ''}
@@ -282,7 +297,7 @@ function itemsView() {
     return `<article class="card pcard rv" style="${it.active === false ? 'opacity:.6' : ''}">
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start">${img ? `<img src="${img}" alt="" style="width:64px;height:64px;border-radius:14px;object-fit:cover;flex:none">` : `<span class="fic" style="width:64px;height:64px;border-radius:14px">${icon(TYPE_IC[it.type])}</span>`}
         <div class="fmid"><b data-raw>${esc(it.name)}</b><small>${t(TYPE_LBL[it.type])} · ${cats.find(c => c.id === it.cat) ? `<span data-raw>${esc(cats.find(c => c.id === it.cat).name)}</span>` : `<span class="t-bad">${t('بدون قسم')}</span>`}</small>
-        <div class="row" style="margin-top:6px"><b class="num" style="color:var(--amber-t)">${from.many ? t('من') + ' ' : ''}${money(from.min)}</b>${it.type === 'manual' ? '' : `<span class="badge ${out ? 'bad' : 'ok'}">${out ? t('نفد') : `${it.stock} ${t('متاح')}`}</span>`}${it.featured ? `<span class="badge warn">${t('مميز')}</span>` : ''}${it.active === false ? `<span class="badge off">${t('مخفي')}</span>` : ''}</div></div></div>
+        <div class="row" style="margin-top:6px"><b class="num" style="color:var(--amber-t)">${from.many ? t('من') + ' ' : ''}${money(from.min)}</b>${it.type === 'manual' ? '' : `<span class="badge ${out ? 'bad' : 'ok'}">${out ? t('نفد') : `${it.stock} ${t('متاح')}`}</span>`}${it.warranty == null ? `<span class="badge bad">${t('حدد الضمان')}</span>` : `<span class="badge icon ${it.warranty ? 'info' : 'off'}">${icon('shield')} ${it.warranty ? `${t('ضمان')} ${it.warranty} ${t('يوم')}` : t('بدون ضمان')}</span>`}${it.featured ? `<span class="badge warn">${t('مميز')}</span>` : ''}${it.active === false ? `<span class="badge off">${t('مخفي')}</span>` : ''}</div></div></div>
       ${stockHint(it)}
       <div class="row"><button class="btn ghost sm" data-act="stItemEdit" data-id="${esc(it.id)}">${icon('edit')} ${t('تعديل')}</button><label class="row small"><span class="toggle"><input type="checkbox" data-itact="${esc(it.id)}" ${it.active === false ? '' : 'checked'}><span></span></span>${t('ظاهر')}</label><span class="spacer"></span><button class="iconbtn sm" data-act="stItemDel" data-id="${esc(it.id)}" aria-label="${t('حذف')}">${icon('trash')}</button></div>
     </article>`;
@@ -358,6 +373,10 @@ function itemForm(it) {
     ${body}
     <div class="grid2 keep"><div class="field"><label>${t('القسم')}</label><select id="ifCat">${cats.some(c => c.id === it.cat) ? '' : `<option value="" selected disabled>${t('اختار القسم…')}</option>`}${cats.map(c => `<option value="${esc(c.id)}" ${it.cat === c.id ? 'selected' : ''} data-raw>${esc(c.name)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('الترتيب')}</label><input id="ifOrder" type="number" dir="ltr" value="${it.order ?? M.items.length + 1}"></div></div>
+    <div class="field wq"><label>${t('مدة ضمان المنتج')} <span class="t-bad">*</span></label>
+      <div class="chips" style="margin-bottom:8px">${[['yes', 'فيه ضمان'], ['no', 'بدون ضمان']].map(([k, l]) => `<button type="button" class="chip ${it.warranty == null ? '' : (k === 'no') === (it.warranty === 0) ? 'on' : ''}" data-wq="${k}">${t(l)}</button>`).join('')}</div>
+      <div id="ifWBox" ${it.warranty > 0 ? '' : 'hidden'}><div class="row" style="flex-wrap:nowrap;gap:8px"><input id="ifW" type="number" min="1" max="365" inputmode="numeric" dir="ltr" style="max-width:120px" value="${it.warranty > 0 ? it.warranty : ''}" placeholder="7"><span class="muted">${t('يوم من التسليم')}</span></div></div>
+      <p class="hint" id="ifWHint" style="margin-top:8px"></p></div>
     <div class="field"><label>${t('ملاحظة للزبون (اختياري)')}</label><input id="ifNote" maxlength="300" value="${esc(it.note || '')}" placeholder="${t('مثلاً: التسليم خلال ساعة')}"></div>
     <div class="row" style="margin-bottom:16px"><label class="row small"><span class="toggle"><input type="checkbox" id="ifFeat" ${it.featured ? 'checked' : ''}><span></span></span>${t('مميز (يظهر فوق)')}</label><label class="row small"><span class="toggle"><input type="checkbox" id="ifAct" ${it.active === false ? '' : 'checked'}><span></span></span>${t('ظاهر للزبائن')}</label></div>
     <div class="mfoot"><button class="btn amber" id="ifGo">${icon('check')} ${t('حفظ')}</button></div>`, { wide: true });
@@ -365,6 +384,15 @@ function itemForm(it) {
   const setImg = v => { image = v; $('#ifImgBox', el).innerHTML = v ? `<img src="${v}" alt="" style="object-fit:cover;padding:0">` : `<span class="ph">${icon('img')}</span>`; $('#ifImgDel', el).hidden = !v; };
   $('#ifImg', el).onchange = async e => { try { setImg(await compressImage(e.target.files[0], 640, 140000)); } catch (er) { toast(er.message, 'bad'); } e.target.value = ''; };
   $('#ifImgDel', el).onclick = () => setImg('');
+  let wq = it.warranty == null ? '' : it.warranty === 0 ? 'no' : 'yes';
+  const wHint = () => {
+    const n = Math.floor(num($('#ifW', el).value)), md = wDays();
+    $('#ifWHint', el).textContent = wq === 'no' ? t('ملفي ما تضمنش المنتج هذا، ويظهر للزبون «بدون ضمان». أرباحه تصير قابلة للسحب أول ما يتسلّم.')
+      : wq === 'yes' ? (n > md ? `${t('ملفي تضمن أول')} ${md} ${t('أيام، وأنت تضمن الباقي لين')} ${n} ${t('يوم. أرباحه تتحول بعد')} ${md} ${t('أيام.')}` : n > 0 ? `${t('ملفي تضمن المنتج')} ${n} ${t('يوم، وأرباحه تتحول بعد ما تخلص.')}` : t('اكتب عدد أيام الضمان.'))
+      : t('سؤال إجباري: حدد كم يوم تضمن المنتج، أو اختار «بدون ضمان».');
+  };
+  $$('[data-wq]', el).forEach(b => b.onclick = () => { wq = b.dataset.wq; $$('[data-wq]', el).forEach(x => x.classList.toggle('on', x === b)); $('#ifWBox', el).hidden = wq !== 'yes'; if (wq === 'yes') setTimeout(() => $('#ifW', el).focus(), 30); wHint(); });
+  $('#ifW', el).oninput = wHint; wHint();
   $$('[data-accname]', el).forEach(b => b.onclick = () => b.classList.toggle('on'));
   let mode = it.mode || 'country';
   $$('[data-mode]', el).forEach(b => b.onclick = () => { mode = b.dataset.mode; $$('[data-mode]', el).forEach(x => x.classList.toggle('on', x === b)); $('#ifCtry', el).hidden = mode === 'pick'; $('#ifPickHint', el).hidden = mode !== 'pick'; });
@@ -378,6 +406,9 @@ function itemForm(it) {
     };
     if (!d.name) throw new Error(t('اكتب اسم المنتج.'));
     if (!cats.some(c => c.id === d.cat)) throw new Error(t('اختار قسم المنتج.'));
+    if (!wq) { $('.wq', el).scrollIntoView({ block: 'center' }); throw new Error(t('حدد مدة ضمان المنتج، أو اختار «بدون ضمان».')); }
+    d.warranty = wq === 'no' ? 0 : Math.floor(num($('#ifW', el).value));
+    if (wq === 'yes' && !(d.warranty >= 1 && d.warranty <= 365)) { $('#ifW', el).focus(); throw new Error(t('اكتب مدة الضمان بالأيام (من 1 لـ 365).')); }
     if (type === 'account') {
       const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
       d.productIds = accs.filter(p => names.includes(p.name)).map(p => p.id).slice(0, 10);
@@ -422,7 +453,7 @@ function draftFrom(s) {
 function previewPayload() {
   const d = M.ed, s = M.store;
   const items = M.items.filter(i => i.active !== false).map(it => {
-    const o = { id: it.id, type: it.type, name: it.name, desc: it.desc || '', cat: it.cat || '', featured: !!it.featured, order: num(it.order), note: it.note || '', img: safeImg(it.image), stock: it.stock || 0 };
+    const o = { id: it.id, type: it.type, name: it.name, desc: it.desc || '', cat: it.cat || '', wd: it.warranty ?? null, featured: !!it.featured, order: num(it.order), note: it.note || '', img: safeImg(it.image), stock: it.stock || 0 };
     if (it.type === 'account') Object.assign(o, { durations: (it.durations || []).filter(x => x.price > 0), maxMonths: it.maxMonths || 0 });
     if (it.type === 'code') Object.assign(o, { price: it.price, maxQty: it.maxQty || 10 });
     if (it.type === 'number') { o.mode = it.mode === 'pick' ? 'pick' : 'country'; if (o.mode === 'pick') o.numbers = it.numbers || []; else o.prices = (it.prices || []).map(p => ({ ...p, n: (it.countries || []).find(c => c.country === p.country)?.n || 0 })); }
@@ -431,7 +462,7 @@ function previewPayload() {
   }).sort((a, b) => a.order - b.order);
   return {
     store: { slug: s.slug, name: d.name, currency: s.currency, country: s.country, open: true, design: d.design, sections: d.sections, categories: d.categories, info: { ...d.info, whatsapp: normPhone(d.info.whatsapp) }, logo: safeImg(d.logo), cover: safeImg(d.cover) },
-    items, pay: { methods: [], fees: (A.S.platform.storeFees?.[s.currency] || [{ upTo: 50, rate: 5 }, { upTo: 100, rate: 4 }, { upTo: 200, rate: 3 }, { upTo: 0, rate: 2 }]) }
+    items, pay: { methods: [], warrantyDays: wDays(), fees: (A.S.platform.storeFees?.[s.currency] || [{ upTo: 50, rate: 5 }, { upTo: 100, rate: 4 }, { upTo: 200, rate: 3 }, { upTo: 0, rate: 2 }]) }
   };
 }
 let pvT = 0, pvReady = false;
@@ -532,9 +563,10 @@ function walletView() {
   <div class="pagehead rv"><div><h1>${t('المحفظة')}</h1><p>${t('الأسعار اللي تحطها توصلك كاملة، رسوم الخدمة يدفعها الزبون')}</p></div></div>
   ${subnav('wallet')}
   <section class="card glow rv wal" style="margin-bottom:16px"><small class="muted">${t('قابل للسحب')}</small><div class="wbig num t-ok">${money(w.available)}</div>
-    <div class="row small"><span class="muted">${t('التسوية القادمة')}:</span><b>${fmtDate(ns)}</b><span class="badge info">${t('تلقائياً كل 7 أيام')}</span></div></section>
+    <div class="row" style="margin:6px 0 12px"><button class="btn amber" data-act="stWithdraw" ${num(w.available) > 0 ? '' : 'disabled'}>${icon('wallet')} ${t('اسحب أرباحك')}</button>${minPay() ? `<small class="muted">${t('أقل مبلغ للسحب')} ${money(minPay())}</small>` : ''}</div>
+    <div class="row small"><span class="muted">${t('أو تتحول تلقائياً في التسوية القادمة')}:</span><b>${fmtDate(ns)}</b></div></section>
   <div class="kv rv" style="margin-bottom:16px"><div><small>${t('معلّق (فترة الضمان)')}</small><b class="num">${money(w.pending)}</b></div><div><small>${t('قيد التحويل')}</small><b class="num">${money(w.inPayout)}</b></div><div><small>${t('تم تحويله')}</small><b class="num">${money(w.withdrawn)}</b></div></div>
-  <p class="hint rv" style="margin:-6px 0 16px">${icon('shield')} ${t('كل طلب عليه ضمان')} ${wDays()} ${t('أيام من ملفي بعد التسليم. لو الزبون ما بلّغش على مشكلة، أرباح الطلب تصير قابلة للسحب بعد ما يخلص الضمان.')}</p>
+  <p class="hint rv" style="margin:-6px 0 16px">${icon('shield')} ${t('المنتجات المضمونة: ملفي تضمنها لحد')} ${wDays()} ${t('أيام بعد التسليم، وأرباحها تصير قابلة للسحب بعد ما يخلص ضمان ملفي. المنتجات بدون ضمان: أرباحها تصير قابلة للسحب فوراً بعد التسليم.')}</p>
   ${M.priv?.payout?.details ? '' : `<div class="card rv" style="margin-bottom:16px;border-color:rgba(245,158,11,.45)"><p>${icon('alert')} ${t('حدد وين تبي توصلك أرباحك')} <a class="link" href="#store/settings">${t('من الإعدادات')}</a></p></div>`}
   <section class="card rv" style="margin-bottom:16px"><div class="chead"><h2>${t('التسويات')}</h2></div>
     ${M.payouts.length ? `<div class="oplist">${M.payouts.map(p => `<div class="op"><div><b class="num">${money(p.amount)}</b><small>${fmtDate(p.createdAt)}${p.reference ? ` · <span data-raw>${esc(p.reference)}</span>` : ''}</small></div><div class="opr"><span class="badge ${p.status === 'paid' ? 'ok' : 'warn'}">${t(p.status === 'paid' ? 'تم التحويل' : 'قيد التحويل')}</span></div></div>`).join('')}</div>` : empty('wallet', t('ما فيش تسويات للحين.'))}</section>
@@ -720,6 +752,13 @@ export const STORE_ACTS = {
   stItemEdit: id => { const it = M.items.find(x => x.id === id); it && itemForm(it); },
   stItemDel: id => { const it = M.items.find(x => x.id === id); it && itemDel(it); },
   stCatNew: () => catForm(null),
+  stWithdraw: async (id, b) => {
+    const w = M.wallet || {};
+    if (!M.priv?.payout?.details) { toast(t('حدد وين توصلك أرباحك من الإعدادات أولاً.'), 'bad'); location.hash = '#store/settings'; return; }
+    if (minPay() && num(w.available) < minPay()) { toast(`${t('أقل مبلغ للسحب')} ${minPay()} ${sym()}`, 'bad'); return; }
+    if (!await confirmBox(`${t('سحب')} <b>${money(w.available)}</b> ${t('على')} <span data-raw>${esc(M.priv.payout.method || '')} · ${esc(M.priv.payout.name || '')}</span>؟`, { ok: t('اسحب') })) return;
+    await busy(b, async () => { const r = await apiPost('/m/wallet/withdraw'); toast(t('تم طلب السحب، الإدارة تحوّلك في أقرب وقت')); });
+  },
   stCatEdit: id => { const c = (M.store.categories || []).find(x => x.id === id); c && catForm(c); },
   stCatDel: id => catDel(id),
   stCatMv: id => catMove(id),

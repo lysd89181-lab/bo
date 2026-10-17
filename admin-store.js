@@ -35,14 +35,14 @@ function alertNew() {
 }
 function beep() { try { const c = new (window.AudioContext || window.webkitAudioContext)(); [0, 200].forEach(d => setTimeout(() => { const o = c.createOscillator(), g = c.createGain(); o.frequency.value = 880; g.gain.value = .08; o.connect(g); g.connect(c.destination); o.start(); setTimeout(() => o.stop(), 150); }, d)); setTimeout(() => c.close(), 600); } catch { } }
 export const awaitingOrders = () => X.open.filter(o => o.status === 'awaiting');
-export const problemOrders = () => X.open.filter(o => o.status === 'problem');
+export const problemOrders = () => X.open.filter(o => o.status === 'problem' || o.claim?.open);
 export function bellItems() {
   return awaitingOrders().slice(0, 5).map(o => `<a class="bellitem soon" href="#sorders"><b data-raw>${esc(o.storeName)} · #${esc(o.id)}</b><small>${money(o.total, o.currency)} · ${t('بانتظار تأكيد الدفع')}</small></a>`).join('');
 }
 
 /* ===================== طلبات المتاجر ===================== */
 export function vStoreOrders(view) {
-  const tabs = [['awaiting', 'بانتظار الدفع', o => o.status === 'awaiting'], ['preparing', 'قيد التجهيز', o => o.status === 'preparing'], ['problem', 'بلاغات', o => o.status === 'problem'], ['delivered', 'مسلّمة', o => o.status === 'delivered'], ['hist', 'السجل', null]];
+  const tabs = [['awaiting', 'بانتظار الدفع', o => o.status === 'awaiting'], ['preparing', 'قيد التجهيز', o => o.status === 'preparing'], ['problem', 'بلاغات', o => o.status === 'problem' || !!o.claim?.open], ['delivered', 'مسلّمة', o => o.status === 'delivered'], ['hist', 'السجل', null]];
   const cur = tabs.find(x => x[0] === X.otab) || tabs[0];
   const list = cur[2] ? X.open.filter(cur[2]) : X.hist;
   const done = X.hist.filter(o => o.status === 'completed');
@@ -59,7 +59,7 @@ export function vStoreOrders(view) {
   const mi = $('#soMonth'); if (mi) mi.onchange = () => { if (/^\d{4}-\d{2}$/.test(mi.value)) { X.month = mi.value; X.hist = []; watchMonth(); } };
 }
 function orderCard(o) {
-  const st = ST[o.status] || ['off', o.status];
+  const st = o.claim?.open ? ['bad', 'بلاغ ضمان'] : (ST[o.status] || ['off', o.status]);
   const items = (o.items || []).map(i => `${esc(i.name)}${i.opt ? ' · ' + esc(i.opt) : ''}${i.qty > 1 ? ' ×' + i.qty : ''}`).join('، ');
   const pay = o.payCurrency === 'USDT' ? `${money(o.payAmount, 'USDT')} <small class="dim">(${money(o.total, o.currency)})</small>` : money(o.total, o.currency);
   const acts = o.status === 'awaiting' ? `<button class="btn teal sm" data-act="soConfirm" data-id="${esc(o.id)}">${icon('check')} ${t('تأكيد الدفع')}</button><button class="btn red sm" data-act="soReject" data-id="${esc(o.id)}">${t('رفض')}</button>`
@@ -70,6 +70,7 @@ function orderCard(o) {
       <div class="small muted" data-raw>${items}</div>
       <div class="small muted">${t('الزبون')}: <span data-raw>${esc(o.customer?.name)}</span> · <span class="ltr" data-raw>${esc(o.customer?.phone)}</span></div>
       <div class="small row" style="gap:6px"><span class="muted" data-raw>${esc(o.refLabel || t('رقم العملية'))}:</span><span class="ltr" style="font-weight:700" data-raw>${esc(o.reference)}</span><button class="iconbtn sm" style="width:28px;height:28px" data-act="copy" data-v="${esc(o.reference)}" aria-label="${t('نسخ')}">${icon('copy')}</button></div>
+      ${o.claim ? `<div class="small t-bad">${icon('shield')} ${t('بلاغ على ضمان المتجر')}${o.claim.open ? '' : ' (' + t('انحل') + ')'}: <span data-raw>${esc(o.claim.text)}</span>${o.claim.reply ? ` · ${t('رد المتجر')}: <span data-raw>${esc(o.claim.reply)}</span>` : ''}<br><span class="muted">${t('ضمان ملفي خلص والفلوس اتحولت للتاجر. تابع مع التاجر والزبون.')}</span></div>` : ''}
       ${o.problem ? `<div class="small t-bad">${icon('alert')} <span data-raw>${esc(o.problem.text)}</span>${o.problem.reply ? ` · ${t('رد المتجر')}: <span data-raw>${esc(o.problem.reply)}</span>` : ''}</div>` : ''}
       <div class="small row" style="gap:8px"><span class="dim">${ago(o.createdAt)}</span><span class="badge ${st[0]}">${t(st[1])}</span>${o.hasReceipt ? `<button class="btn ghost sm" style="height:30px" data-act="soReceipt" data-id="${esc(o.id)}">${icon('eye')} ${t('الإيصال')}</button>` : ''}</div></div>
     <div class="acts">${acts}</div></div>`;
@@ -136,7 +137,7 @@ export function vPayouts(view) {
   view.innerHTML = `
   <div class="pagehead rv"><div><h1>${t('التسويات')}</h1><p>${t('كل 7 أيام من فتح المتجر، الأرباح المؤكدة تتحول للتاجر')}</p></div><button class="btn ghost" data-act="soCron">${icon('refresh')} ${t('تشغيل المهام الآن')}</button></div>
   <div class="toolbar rv"><div class="chips">${[['due', `قيد التحويل (${due.length})`], ['paid', 'المحوّلة']].map(([k, l]) => `<button class="chip ${X.ptab === k ? 'on' : ''}" data-act="soPtab" data-id="${k}">${t(l)}</button>`).join('')}</div></div>
-  <div class="rems rv">${list.length ? list.map(p => `<div class="rem ${p.status === 'due' ? 'soon' : ''}" style="grid-template-columns:1fr auto"><div><b data-raw>${esc(p.storeName)}</b><span class="when num">${money(p.amount, p.currency)}</span><small>${fmtDate(p.createdAt)}${p.reference ? ` · <span data-raw>${esc(p.reference)}</span>` : ''}</small></div>
+  <div class="rems rv">${list.length ? list.map(p => `<div class="rem ${p.status === 'due' ? 'soon' : ''}" style="grid-template-columns:1fr auto"><div><b data-raw>${esc(p.storeName)}</b>${p.requested ? ` <span class="badge info">${t('طلب سحب')}</span>` : ''}<span class="when num">${money(p.amount, p.currency)}</span><small>${fmtDate(p.createdAt)}${p.reference ? ` · <span data-raw>${esc(p.reference)}</span>` : ''}</small></div>
     <div class="acts">${p.status === 'due' ? `<button class="btn teal sm" data-act="soPay" data-id="${esc(p.id)}">${icon('check')} ${t('تم التحويل')}</button>` : `<span class="badge ok">${t('تم')}</span>`}</div></div>`).join('') : `<div class="card">${empty('wallet', t('ما فيش تسويات هنا.'))}</div>`}</div>`;
 }
 async function payDialog(p) {
@@ -176,7 +177,8 @@ export function storeSettingsHTML(pf) {
     ${['LYD', 'SAR'].map(c => `<div class="lbl" style="margin-top:6px">${t(c === 'LYD' ? 'شرائح الدينار الليبي' : 'شرائح الريال السعودي')} <span class="dim">(${t('أقل من المبلغ ← النسبة %')})</span></div><div data-fees="${c}">${fees(c).map(f => row(c, f)).join('')}</div><button type="button" class="btn ghost sm" data-addfee="${c}" style="margin-bottom:14px">${icon('plus')} ${t('شريحة')}</button>`).join('')}
     <div class="grid2"><div class="field"><label>${t('سعر USDT بالدينار (1 USDT = ؟ د.ل)')}</label><input id="gsRL" inputmode="decimal" dir="ltr" value="${pf.usdtRate?.LYD ?? ''}"></div><div class="field"><label>${t('سعر USDT بالريال (1 USDT = ؟ ر.س)')}</label><input id="gsRS" inputmode="decimal" dir="ltr" value="${pf.usdtRate?.SAR ?? ''}"></div></div>
     <p class="hint" style="margin:-6px 0 14px">${t('فاضي = USDT ما يظهرش في المتاجر بهذي العملة')}</p>
-    <div class="grid2"><div class="field"><label>${t('مدة الضمان بعد التسليم (أيام)')}</label><input id="gsWD" type="number" min="1" max="30" dir="ltr" value="${pf.warrantyDays || 7}"><span class="hint">${t('الزبون يقدر يبلّغ طول المدة هذي، وأرباح التاجر تتحول بعد ما تخلص.')}</span></div><div class="field"><label>${t('إلغاء الطلب لو الدفع ما تأكدش خلال (ساعة)')}</label><input id="gsAH" type="number" min="1" max="168" dir="ltr" value="${pf.awaitHours || 24}"></div></div>
+    <div class="grid2"><div class="field"><label>${t('أقصى ضمان من ملفي (أيام)')}</label><input id="gsWD" type="number" min="1" max="30" dir="ltr" value="${pf.warrantyDays || 7}"><span class="hint">${t('ملفي تضمن المنتج لحد المدة هذي (أو أقل لو ضمان التاجر أقصر)، وأرباحه تتحول للتاجر بعد ما تخلص.')}</span></div><div class="field"><label>${t('إلغاء الطلب لو الدفع ما تأكدش خلال (ساعة)')}</label><input id="gsAH" type="number" min="1" max="168" dir="ltr" value="${pf.awaitHours || 24}"></div></div>
+    <div class="grid2"><div class="field"><label>${t('أقل مبلغ للسحب بالدينار (فاضي = أي مبلغ)')}</label><input id="gsMPL" inputmode="decimal" dir="ltr" value="${pf.minPayout?.LYD || ''}"></div><div class="field"><label>${t('أقل مبلغ للسحب بالريال (فاضي = أي مبلغ)')}</label><input id="gsMPS" inputmode="decimal" dir="ltr" value="${pf.minPayout?.SAR || ''}"></div></div>
     <label class="row" style="margin-bottom:16px"><span class="toggle"><input type="checkbox" id="gsTS" ${pf.trialStore ? 'checked' : ''}><span></span></span><span><b>${t('المتجر متاح في التجربة المجانية')}</b></span></label>
     <button class="btn amber" id="gsStoreSave">${t('حفظ إعدادات المتاجر')}</button></section>`;
 }
@@ -197,7 +199,7 @@ export function bindStoreSettings(save) {
       storeFees[c] = tiers.sort((a, b) => (a.upTo || Infinity) - (b.upTo || Infinity)).slice(0, 8);
     }
     const rate = v => { const n = num(v); return n > 0 ? n : 0; };
-    await save({ storeFees, usdtRate: { LYD: rate($('#gsRL').value), SAR: rate($('#gsRS').value) }, warrantyDays: Math.min(30, Math.max(1, Math.floor(num($('#gsWD').value)) || 7)), awaitHours: Math.min(168, Math.max(1, Math.floor(num($('#gsAH').value)) || 24)), trialStore: $('#gsTS').checked });
+    await save({ storeFees, usdtRate: { LYD: rate($('#gsRL').value), SAR: rate($('#gsRS').value) }, warrantyDays: Math.min(30, Math.max(1, Math.floor(num($('#gsWD').value)) || 7)), minPayout: { LYD: Math.max(0, Math.round(num($('#gsMPL').value) * 100) / 100), SAR: Math.max(0, Math.round(num($('#gsMPS').value) * 100) / 100) }, awaitHours: Math.min(168, Math.max(1, Math.floor(num($('#gsAH').value)) || 24)), trialStore: $('#gsTS').checked });
     toast(t('تم الحفظ'));
   });
 }

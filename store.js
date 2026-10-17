@@ -37,11 +37,31 @@ let openProb = '';
 const DAYMS = 864e5;
 const daysLeft = end => Math.max(0, Math.ceil((end - Date.now()) / DAYMS));
 const wDays = () => B?.pay?.warrantyDays || 7;
+const dTxt = d => d === 1 ? 'يوم' : d === 2 ? 'يومين' : d <= 10 ? `${d} أيام` : `${d} يوم`;
+const itemWd = it => it?.wd == null ? wDays() : +it.wd;
+// شارة الضمان للمنتج: ملفي تضمن لحد أيامها، والتاجر يضمن الباقي
+function warrBadge(it) {
+  const d = itemWd(it), m = Math.min(d, wDays());
+  if (!d) return `<div class="note warn">${ic('alert')}<span><b>بدون ضمان.</b> المنتج هذا ما عليهش ضمان من المتجر ولا من ملفي.</span></div>`;
+  return `<div class="note ok">${ic('shield')}<span><b>ضمان ${dTxt(d)}</b>${d > m ? `: ملفي تضمن أول ${dTxt(m)}، والمتجر يضمن الباقي.` : ' مضمون من ملفي.'} لو صارت مشكلة بلّغ من «طلباتي».</span></div>`;
+}
+function warrCard(o) {
+  const now = Date.now();
+  if (!o.merchDays) return `<div class="warr over">${ic('alert', 2)}<div class="grow"><b>بدون ضمان</b><small>المنتج هذا ما عليهش ضمان من المتجر ولا من ملفي.</small></div></div>`;
+  const ml = o.warrantyEnd && now < o.warrantyEnd, sl = o.merchEnd && now < o.merchEnd;
+  const rows = [];
+  if (o.warrantyDays) rows.push(ml ? `ضمان ملفي: باقي ${dTxt(daysLeft(o.warrantyEnd))} (لين ${when(o.warrantyEnd)}). مبلغك محفوظ عند ملفي لين يخلص.` : 'ضمان ملفي خلص.');
+  if (o.merchDays > o.warrantyDays) rows.push(sl ? `ضمان المتجر: لين ${when(o.merchEnd)} (${dTxt(o.merchDays)} من التسليم).` : 'ضمان المتجر خلص.');
+  const live = ml || sl;
+  const head = live ? `مضمون: باقي ${dTxt(daysLeft(Math.max(o.warrantyEnd || 0, o.merchEnd || 0)))}` : 'انتهى الضمان';
+  const mixed = (o.items || []).some(i => i.wd === 0) && (o.items || []).some(i => i.wd > 0);
+  return `<div class="warr ${live ? '' : 'over'}">${ic('shield', 2)}<div class="grow"><b>${head}</b>${rows.map(r => `<small>${r}</small>`).join('')}${mixed ? `<small>بدون ضمان: ${o.items.filter(i => i.wd === 0).map(i => esc(i.name)).join('، ')}</small>` : ''}${live ? '<small>لو صارت أي مشكلة (مثلاً الحساب تقفل) بلّغ من هنا.</small>' : ''}</div></div>`;
+}
 function warrantyTxt(end, status) {
   if (!end) return '';
   if (['refunded', 'rejected', 'cancelled'].includes(status)) return '';
   const d = daysLeft(end);
-  return d > 0 ? `ضمان ملفي: باقي ${d === 1 ? 'يوم' : d === 2 ? 'يومين' : d + ' أيام'}` : 'انتهى الضمان';
+  return d > 0 ? `مضمون: باقي ${dTxt(d)}` : 'انتهى الضمان';
 }
 
 /* ===================== أدوات العرض ===================== */
@@ -171,8 +191,8 @@ function prodHTML(id) {
   const qtyable = it.type !== 'number' || it.mode !== 'pick';
   const out = !inStock(it) || max < 1;
   return `${top('تفاصيل المنتج')}<div class="wrap pd"><div>${art(it, 'pd-art')}</div><div>
-    <div class="pd-h"><h2>${esc(it.name)}</h2>${it.desc ? `<p>${esc(it.desc)}</p>` : ''}<div class="badges">${out ? '<span class="badge b-bad">نفد</span>' : '<span class="badge b-ok">متاح</span>'}</div></div>
-    <div class="pad">${opts}${qtyable && !out ? `<div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 14px"><span style="font-weight:600">الكمية</span><div class="qty"><button type="button" data-a="pq" data-v="-1" aria-label="أقل" ${s.qty <= 1 ? 'disabled' : ''}>${ic('minus', 2.2)}</button><b class="num">${s.qty}</b><button type="button" data-a="pq" data-v="1" aria-label="أكثر" ${s.qty >= max ? 'disabled' : ''}>${ic('plus', 2.2)}</button></div></div>` : ''}${note}${it.note ? `<div class="note info">${ic('info')}<span>${esc(it.note)}</span></div>` : ''}</div></div></div>
+    <div class="pd-h"><h2>${esc(it.name)}</h2>${it.desc ? `<p>${esc(it.desc)}</p>` : ''}<div class="badges">${out ? '<span class="badge b-bad">نفد</span>' : '<span class="badge b-ok">متاح</span>'}${itemWd(it) ? `<span class="badge b-info">${ic('shield', 2)} ضمان ${dTxt(itemWd(it))}</span>` : '<span class="badge b-off">بدون ضمان</span>'}</div></div>
+    <div class="pad">${opts}${qtyable && !out ? `<div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 14px"><span style="font-weight:600">الكمية</span><div class="qty"><button type="button" data-a="pq" data-v="-1" aria-label="أقل" ${s.qty <= 1 ? 'disabled' : ''}>${ic('minus', 2.2)}</button><b class="num">${s.qty}</b><button type="button" data-a="pq" data-v="1" aria-label="أكثر" ${s.qty >= max ? 'disabled' : ''}>${ic('plus', 2.2)}</button></div></div>` : ''}${note}${warrBadge(it)}${it.note ? `<div class="note info">${ic('info')}<span>${esc(it.note)}</span></div>` : ''}</div></div></div>
     <div class="bar"><div class="in"><button class="sbtn" type="button" data-a="add" data-v="${esc(it.id)}" ${out || !unit ? 'disabled' : ''}>${out ? 'نفد من المخزون' : `${ic('cart', 2)} أضف للسلة · <span class="num">${money(unit * s.qty)}</span>`}</button></div></div>`;
 }
 function lineInfo(l) {
@@ -236,7 +256,8 @@ function checkoutHTML() {
     <div class="card">${T.lines.map(({ x, l }) => `<div class="line"><span>${esc(x.it.name)}${l.qty > 1 ? ` × ${l.qty}` : ''}</span><b class="num">${money(x.total)}</b></div>`).join('')}
       <div class="line"><span>رسوم الخدمة (${T.rate}%)</span><b class="num">${money(T.fee)}</b></div><div class="line total"><span>الإجمالي</span><b class="num">${money(T.total)}</b></div></div>
     ${sess ? `<div class="note ok">${ic('user')}<span>الطلب ينحفظ في حسابك <b dir="ltr">${esc(sess.email)}</b>، وتلقاه من أي جهاز.</span></div>` : `<div class="note info">${ic('user')}<span>سجّل دخولك بإيميلك (اختياري) باش تلقى طلبك وضمانه من أي جهاز. <a href="/login" data-go style="color:inherit;font-weight:700;text-decoration:underline">تسجيل الدخول</a></span></div>`}
-    <div class="safe">${ic('shield')}كل طلب عليه ضمان ${wDays()} أيام من ملفي بعد التسليم. المبلغ ما يوصل للمتجر إلا بعد ما يخلص الضمان.</div>
+    ${T.lines.some(({ x }) => !itemWd(x.it)) ? `<div class="note warn">${ic('alert')}<span>فيه منتجات بدون ضمان في السلة: ${T.lines.filter(({ x }) => !itemWd(x.it)).map(({ x }) => esc(x.it.name)).join('، ')}. ملفي ما تضمنهاش.</span></div>` : ''}
+    <div class="safe">${ic('shield')}المنتجات المضمونة: ملفي تضمنها لحد ${wDays()} أيام بعد التسليم، والمبلغ ما يوصل للمتجر إلا بعد ما يخلص ضمان ملفي.</div>
     </div><div class="bar"><div class="in"><button class="sbtn" type="button" id="place" data-a="place" ${m && T.ok ? '' : 'disabled'}>${ic('check', 2.2)} تأكيد الطلب · <span class="num">${money(T.total)}</span></button></div></div>`;
 }
 const STATUS = { awaiting: ['بانتظار تأكيد الدفع', 'b-warn'], preparing: ['قيد التجهيز', 'b-info'], delivered: ['تم التسليم', 'b-ok'], completed: ['مكتمل', 'b-ok'], problem: ['بلاغ مفتوح', 'b-bad'], refunded: ['تم إرجاع المبلغ', 'b-off'], rejected: ['مرفوض', 'b-bad'], cancelled: ['ملغي', 'b-off'] };
@@ -262,10 +283,11 @@ function orderHTML(id) {
     ${ready.length ? `<div class="card"><h3 style="color:var(--s-ok-t)">${ic('check', 2.4).replace('<svg', '<svg style="width:18px;height:18px"')}طلبك جاهز</h3>${ready.map(i => `<div class="codebox"><b>${esc(i.name)}${i.opt ? ` · ${esc(i.opt)}` : ''}</b>${i.lines.map(x => `<div class="cv"><div style="flex:1;min-width:0"><small>${esc(x.l)}</small><code>${esc(x.v)}</code></div><button class="cpb" type="button" data-a="copy" data-v="${esc(x.v)}">${ic('copy')}نسخ</button></div>`).join('')}</div>`).join('')}</div>` : ''}
     ${o.items.some(i => i.status !== 'delivered') && ['preparing', 'problem'].includes(o.status) ? `<div class="note warn">${ic('clock')}<span>${o.items.filter(i => i.status !== 'delivered').map(i => esc(i.name)).join('، ')}: قيد التجهيز عند المتجر.</span></div>` : ''}
     ${o.problem ? `<div class="card"><h3>${ic('alert')}البلاغ</h3><p class="prose">${esc(o.problem.text)}</p>${o.problem.reply ? `<div class="note info" style="margin:12px 0 0">${ic('info')}<span><b>رد المتجر:</b> ${esc(o.problem.reply)}</span></div>` : ''}${o.status === 'problem' ? `<p class="safe">مبلغك محفوظ لين تنحل المشكلة، وفريق ملفي يتابع.</p>` : ''}</div>` : ''}
-    ${o.warrantyEnd && !['refunded', 'rejected', 'cancelled'].includes(o.status) ? `<div class="warr ${daysLeft(o.warrantyEnd) > 0 ? '' : 'over'}">${ic('shield', 2)}<div class="grow"><b>${warrantyTxt(o.warrantyEnd, o.status)}</b><small>${daysLeft(o.warrantyEnd) > 0 ? `الضمان ${o.warrantyDays || wDays()} أيام من التسليم، لين ${when(o.warrantyEnd)}. لو صارت أي مشكلة (مثلاً الحساب تقفل) بلّغ من هنا.` : 'مدة الضمان خلصت.'}</small></div></div>` : ''}
+    ${o.deliveredAt && !['refunded', 'rejected', 'cancelled'].includes(o.status) ? warrCard(o) : ''}
+    ${o.claim ? `<div class="card"><h3>${ic('shield')}بلاغ على ضمان المتجر</h3><p class="prose">${esc(o.claim.text)}</p>${o.claim.reply ? `<div class="note info" style="margin:12px 0 0">${ic('info')}<span><b>رد المتجر:</b> ${esc(o.claim.reply)}</span></div>` : ''}<p class="safe">${o.claim.open ? 'البلاغ وصل للمتجر ولإدارة ملفي.' : 'تم حل البلاغ.'}</p></div>` : ''}
     ${o.canReceive || o.canReport ? `<div class="gap" style="margin-bottom:14px">
-      ${o.canReport ? `<button class="sbtn ${o.canReceive ? 'ghost' : ''} rep" type="button" data-a="showProblem" ${openProb === o.id ? 'hidden' : ''}>${ic('alert')} إبلاغ عن مشكلة</button><div id="probBox" ${openProb === o.id ? '' : 'hidden'}><div class="fld"><label for="probText">اكتب المشكلة بالتفصيل</label><textarea class="inp" id="probText" maxlength="600" placeholder="مثلاً: الحساب طلب كلمة سر جديدة ووقف"></textarea></div><button class="sbtn" type="button" data-a="sendProblem">إرسال البلاغ</button><p class="safe">البلاغ يوصل للمتجر ولإدارة ملفي، ومبلغك يبقى محفوظ لين تنحل المشكلة.</p></div>` : ''}
-      ${o.canReceive ? `<button class="sbtn ${o.status === 'problem' ? '' : 'ghost'}" type="button" data-a="recv">${ic('check', 2.2)} ${o.status === 'problem' ? 'انحلت المشكلة' : 'استلمت، كل شي تمام'}</button>` : ''}</div>` : ''}
+      ${o.canReport ? `<button class="sbtn ${o.canReceive ? 'ghost' : ''} rep" type="button" data-a="showProblem" ${openProb === o.id ? 'hidden' : ''}>${ic('alert')} إبلاغ عن مشكلة</button><div id="probBox" ${openProb === o.id ? '' : 'hidden'}><div class="fld"><label for="probText">اكتب المشكلة بالتفصيل</label><textarea class="inp" id="probText" maxlength="600" placeholder="مثلاً: الحساب طلب كلمة سر جديدة ووقف"></textarea></div><button class="sbtn" type="button" data-a="sendProblem">إرسال البلاغ</button><p class="safe">${o.status === 'completed' ? 'البلاغ يوصل للمتجر ولإدارة ملفي، والمتجر مسؤول عن ضمانه.' : 'البلاغ يوصل للمتجر ولإدارة ملفي، ومبلغك يبقى محفوظ لين تنحل المشكلة.'}</p></div>` : ''}
+      ${o.canReceive ? `<button class="sbtn ${o.status === 'problem' || o.claim?.open ? '' : 'ghost'}" type="button" data-a="recv">${ic('check', 2.2)} ${o.status === 'problem' || o.claim?.open ? 'انحلت المشكلة' : 'استلمت، كل شي تمام'}</button>` : ''}</div>` : ''}
     <div class="card"><h3>تفاصيل الدفع</h3>${o.items.map(i => `<div class="line"><span>${esc(i.name)}${i.opt ? ` · ${esc(i.opt)}` : ''}${i.qty > 1 ? ` × ${i.qty}` : ''}</span><b class="num">${money(i.total, o.currency)}</b></div>`).join('')}
       <div class="line"><span>رسوم الخدمة</span><b class="num">${money(o.fee, o.currency)}</b></div><div class="line total"><span>الإجمالي</span><b class="num">${money(o.total, o.currency)}</b></div>
       ${o.payCurrency === 'USDT' ? `<div class="line"><span>المدفوع</span><b class="num">${money(o.payAmount, 'USDT')}</b></div>` : ''}<div class="line"><span>${esc(o.method)}</span><b dir="auto">${esc(o.reference)}</b></div></div>
@@ -276,14 +298,14 @@ function orderHTML(id) {
 function ordersHTML() {
   const local = myOrders();
   const rows = new Map();
-  (mine?.orders || []).forEach(o => rows.set(o.id, { id: o.id, at: o.createdAt, total: o.total, cur: o.currency, status: o.status, end: o.warrantyEnd, rep: o.canReport, what: o.items.map(i => i.name).join('، ') }));
-  local.forEach(o => { const v = orders[o.id]; if (!rows.has(o.id)) rows.set(o.id, { id: o.id, at: o.at, total: v?.total ?? o.total, cur: v?.currency, status: v?.status, end: v?.warrantyEnd, rep: v?.canReport, what: v ? v.items.map(i => i.name).join('، ') : '' }); });
+  (mine?.orders || []).forEach(o => rows.set(o.id, { id: o.id, at: o.createdAt, total: o.total, cur: o.currency, status: o.status, end: o.warrantyEnd, now: o.noWarranty, claim: o.claimOpen, rep: o.canReport, what: o.items.map(i => i.name).join('، ') }));
+  local.forEach(o => { const v = orders[o.id]; if (!rows.has(o.id)) rows.set(o.id, { id: o.id, at: o.at, total: v?.total ?? o.total, cur: v?.currency, status: v?.status, end: v ? Math.max(v.warrantyEnd || 0, v.merchEnd || 0) : 0, now: v ? v.deliveredAt && !v.merchDays : false, claim: !!v?.claim?.open, rep: v?.canReport, what: v ? v.items.map(i => i.name).join('، ') : '' }); });
   const list = [...rows.values()].sort((a, b) => (b.at || 0) - (a.at || 0));
   const acct = sess
     ? `<div class="card acct"><span class="av">${ic('user', 2)}</span><div class="grow"><small>مسجّل دخول</small><b dir="ltr">${esc(sess.email)}</b></div><button class="ibtn" type="button" data-a="logout" aria-label="تسجيل الخروج">${ic('logout')}</button></div>`
     : `<div class="card acct"><span class="av">${ic('mail', 2)}</span><div class="grow"><b>تلقى طلباتك من أي جهاز</b><small>سجّل دخولك بإيميلك، وكل طلباتك وضمانها تتجمع في حسابك.</small></div><a class="sbtn sm" href="/login" data-go>دخول</a></div>`;
   return `${top('طلباتي')}<div class="pad">${acct}
-    ${list.length ? `<div class="card" style="padding:4px 16px">${list.map(o => { const st = o.status ? STATUS[o.status] : null; const w = warrantyTxt(o.end, o.status); return `<a class="ord" href="/o/${esc(o.id)}" data-go><div class="grow"><b class="num">#${esc(o.id)}</b>${o.what ? `<small>${esc(o.what)}</small>` : ''}<small>${when(o.at)}</small>${w ? `<span class="wchip ${daysLeft(o.end) > 0 ? '' : 'over'}">${ic('shield', 2)}${w}</span>` : ''}</div><div class="oside">${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}<b class="num">${money(o.total, o.cur)}</b>${o.rep ? `<span class="repl" data-a="repOpen" data-v="${esc(o.id)}" role="button">إبلاغ</span>` : ''}</div></a>`; }).join('')}</div>`
+    ${list.length ? `<div class="card" style="padding:4px 16px">${list.map(o => { const st = o.claim ? ['بلاغ ضمان', 'b-bad'] : o.status ? STATUS[o.status] : null; const w = o.now ? 'بدون ضمان' : warrantyTxt(o.end, o.status); return `<a class="ord" href="/o/${esc(o.id)}" data-go><div class="grow"><b class="num">#${esc(o.id)}</b>${o.what ? `<small>${esc(o.what)}</small>` : ''}<small>${when(o.at)}</small>${w ? `<span class="wchip ${!o.now && daysLeft(o.end) > 0 ? '' : 'over'}">${ic('shield', 2)}${w}</span>` : ''}</div><div class="oside">${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}<b class="num">${money(o.total, o.cur)}</b>${o.rep ? `<span class="repl" data-a="repOpen" data-v="${esc(o.id)}" role="button">إبلاغ</span>` : ''}</div></a>`; }).join('')}</div>`
       : `<div class="empty">${sess ? 'ما عندكش طلبات في المتجر هذا للحين.' : 'ما عندكش طلبات على هذا الجهاز.'}</div>`}</div>`;
 }
 function loginHTML() {

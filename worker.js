@@ -12,7 +12,7 @@ const OPEN = ['awaiting', 'preparing', 'delivered', 'problem'];
 const CUR_SYM = { LYD: 'د.ل', SAR: 'ر.س', USDT: 'USDT' };
 const ASSETS = { '/store.js': 'text/javascript; charset=utf-8', '/store.css': 'text/css; charset=utf-8', '/store-theme.js': 'text/javascript; charset=utf-8' };
 const STORE_FIELDS = ['ownerId', 'slug', 'name', 'country', 'currency', 'status', 'suspended', 'design', 'sections', 'info', 'categories', 'logoV', 'coverV', 'launchedAt', 'updatedAt', 'payMethods'];
-const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt'];
+const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt', 'warranty'];
 const USER_FIELDS = ['isActive', 'planExpiresAt', 'plan', 'status', 'storeAccess', 'role', 'displayName'];
 
 class HttpError extends Error { constructor(status, message, extra) { super(message); this.status = status; this.extra = extra || {}; } }
@@ -324,7 +324,7 @@ async function methodsFor(fs, store, platform) {
     }).filter(Boolean).sort((a, b) => a.order - b.order);
 }
 function pubItem(it) {
-  const o = { id: it.id, type: it.type, name: clean(it.name, 80), desc: clean(it.desc, 800), cat: clean(it.cat, 30), featured: it.featured === true, order: num(it.order), note: clean(it.note, 300), img: it.imgV ? `/img/i/${it.id}?v=${int(it.imgV)}` : '' };
+  const o = { id: it.id, type: it.type, name: clean(it.name, 80), desc: clean(it.desc, 800), cat: clean(it.cat, 30), featured: it.featured === true, order: num(it.order), note: clean(it.note, 300), img: it.imgV ? `/img/i/${it.id}?v=${int(it.imgV)}` : '', wd: itemWarranty(it) };
   if (it.type === 'account') {
     o.durations = (Array.isArray(it.durations) ? it.durations : []).map(d => ({ m: int(d?.m), price: round2(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).sort((a, b) => a.m - b.m).slice(0, 8);
     o.stock = Math.max(0, int(it.stock)); o.maxMonths = Math.max(0, int(it.maxMonths));
@@ -386,6 +386,12 @@ async function catalog(fs, slug) {
 // مدة الضمان: الفلوس تبقى معلّقة والزبون يقدر يبلّغ طول المدة هذي بعد التسليم
 const warrantyDays = p => Math.min(30, Math.max(1, int(p?.warrantyDays) || 7));
 const completeHours = p => warrantyDays(p) * 24;
+// ضمان المنتج اللي يحطه التاجر بالأيام (0 = بدون ضمان، null = منتج قديم ما تحددلهش → ضمان ملفي الافتراضي)
+const itemWarranty = it => { const v = it?.warranty; return v === undefined || v === null || v === '' ? null : Math.max(0, Math.min(365, int(v))); };
+// ملفي تضمن (وتحجز الفلوس) أقل قيمة بين ضمان التاجر ومدة ضمان ملفي
+const holdDaysOf = (o, p) => o?.holdDays != null ? Math.max(0, int(o.holdDays)) : warrantyDays(p);
+const merchDaysOf = (o, p) => o?.wDays != null ? Math.max(0, int(o.wDays)) : warrantyDays(p);
+const minPayout = (p, cur) => Math.max(0, round2(p?.minPayout?.[cur]));
 const awaitHours = p => Math.min(168, Math.max(1, int(p?.awaitHours) || 24));
 async function purgeStore(slug) { forget('cat:' + slug); forget('ctx:' + slug); }
 
@@ -521,7 +527,8 @@ async function createOrder(req, env, fs, slug, ectx) {
         unit = round2(pk.price); opt = clean(pk.label, 60);
         extra = { input: input.filter(x => x.value) };
       } else throw new HttpError(409, 'منتج غير متاح.', { code: 'stale' });
-      outLines.push({ itemId: it.id, type: it.type, name: nm, opt, qty: l.qty, unit, total: round2(unit * l.qty), status: 'pending', ...extra });
+      const wd = itemWarranty(it) ?? warrantyDays(platform);
+      outLines.push({ itemId: it.id, type: it.type, name: nm, opt, qty: l.qty, unit, total: round2(unit * l.qty), status: 'pending', wd, ...extra });
     }
     const subtotal = round2(outLines.reduce((a, x) => a + x.total, 0));
     if (!(subtotal > 0)) throw new HttpError(400, 'مبلغ الطلب غير صحيح.');
@@ -536,7 +543,8 @@ async function createOrder(req, env, fs, slug, ectx) {
       method: { id: m.id, name: m.name }, refLabel: m.inputLabel, reference, hasReceipt: !!receipt,
       status: 'awaiting', open: true, month: monthKey(now), createdAt: now, updatedAt: now,
       expireAt: now + awaitHours(platform) * 3600e3, autoAt: null,
-      tokenHash, ipHash, log: [{ s: 'awaiting', at: now }]
+      tokenHash, ipHash, log: [{ s: 'awaiting', at: now }],
+      wDays: Math.max(...outLines.map(x => x.wd)), holdDays: Math.max(...outLines.map(x => Math.min(x.wd, warrantyDays(platform))))
     };
     if (cust) { order.customerKey = cust.key; order.customerEmail = cust.email; }
     for (const r of reserved) W.push(fs.wUpdate(`merchants/${sid}/${r.c}/${r.id}`, { status: 'reserved', reservedBy: oid, reservedAt: now }));
@@ -577,19 +585,22 @@ async function customerView(fs, o, slug) {
     const sec = await fs.get(`orderSecrets/${o.id}`);
     lines = Array.isArray(sec?.lines) ? sec.lines : [];
   }
-  const ch = completeHours(p) * 3600e3;
+  const ch = holdDaysOf(o, p) * DAY, md = merchDaysOf(o, p), now = Date.now();
+  const dl = num(o.deliveredAt);
+  const canClaim = o.status === 'completed' && dl > 0 && md > 0 && now < dl + md * DAY && !o.claim?.open;
   return {
     id: o.id, status: o.status, createdAt: o.createdAt, paidAt: o.paidAt || 0, deliveredAt: o.deliveredAt || 0, completedAt: o.completedAt || 0,
     currency: o.currency, subtotal: o.subtotal, fee: o.fee, feeRate: o.feeRate, total: o.total, payCurrency: o.payCurrency, payAmount: o.payAmount,
     method: o.method?.name || '', reference: o.reference, customer: { name: o.customer?.name || '' },
-    items: o.items.map((x, i) => ({ name: x.name, opt: x.opt, qty: x.qty, total: x.total, type: x.type, status: x.status, input: x.input || [], lines: (lines.find(l => l.line === i)?.items || []).map(y => ({ l: y.l, v: y.v })) })),
+    items: o.items.map((x, i) => ({ name: x.name, opt: x.opt, qty: x.qty, total: x.total, type: x.type, status: x.status, wd: x.wd ?? null, input: x.input || [], lines: (lines.find(l => l.line === i)?.items || []).map(y => ({ l: y.l, v: y.v })) })),
     note: o.status === 'rejected' || o.status === 'cancelled' ? (o.adminNote || '') : '',
     problem: o.problem ? { text: o.problem.text, reply: o.problem.reply || '', at: o.problem.at } : null,
     resolution: o.resolution ? { action: o.resolution.action, note: o.resolution.note || '' } : null,
     autoAt: o.status === 'delivered' ? (o.autoAt || (o.deliveredAt + ch)) : 0,
-    warrantyDays: warrantyDays(p), warrantyEnd: o.deliveredAt ? num(o.deliveredAt) + ch : 0, received: !!o.received,
-    canReceive: (o.status === 'delivered' && !o.received) || o.status === 'problem',
-    canReport: o.status === 'preparing' || (o.status === 'delivered' && Date.now() < (o.deliveredAt || 0) + ch),
+    warrantyDays: holdDaysOf(o, p), warrantyEnd: dl && ch ? dl + ch : 0, merchDays: md, merchEnd: dl && md ? dl + md * DAY : 0, received: !!o.received,
+    claim: o.claim ? { text: o.claim.text, reply: o.claim.reply || '', open: !!o.claim.open, at: o.claim.at } : null,
+    canReceive: (o.status === 'delivered' && !o.received) || o.status === 'problem' || !!o.claim?.open,
+    canReport: o.status === 'preparing' || (o.status === 'delivered' && now < dl + ch) || canClaim,
     account: !!o.customerKey,
     store: { name: ctx?.store?.name || o.storeName, whatsapp: normPhone(ctx?.store?.info?.whatsapp, o.country) }
   };
@@ -740,7 +751,7 @@ async function confirmOrder(fs, id, by, env, ctx) {
     const p = await platformOf(fs);
     const upd = {
       status, open: true, items, paidAt: now, confirmedBy: by, custId, expireAt: null, updatedAt: now,
-      deliveredAt: allDone ? now : null, autoAt: allDone ? now + completeHours(p) * 3600e3 : null,
+      deliveredAt: allDone ? now : null, autoAt: allDone ? now + holdDaysOf(o, p) * DAY : null,
       log: [...(o.log || []), { s: 'paid', at: now, by }, ...(status !== 'preparing' ? [{ s: status, at: now, by: 'system' }] : [])].slice(-30)
     };
     if (failed) upd.problem = { text: 'تعذر تسليم بعض المنتجات تلقائياً (المخزون تغيّر). المتجر يسلّمها يدوياً أو الإدارة ترجع المبلغ.', at: now, by: 'system' };
@@ -750,13 +761,15 @@ async function confirmOrder(fs, id, by, env, ctx) {
     const nw = { pending: round2(num(wal.pending) + o.subtotal), updatedAt: now };
     W.push(w ? fs.wUpdate(`wallets/${sid}`, nw) : fs.wCreate(`wallets/${sid}`, { ...wal, ...nw }));
     ledger(fs, W, o, 'hold', o.subtotal, 'طلب مدفوع (معلّق لين الاستلام)', now);
-    return { status, slug: o.slug, pending, failed, storeId: sid, sub: o.subtotal, cur: o.currency, oid: id };
+    return { status, slug: o.slug, pending, failed, storeId: sid, sub: o.subtotal, cur: o.currency, oid: id, noHold: allDone && holdDaysOf(o, p) === 0 };
   });
+  // منتجات بدون ضمان: الفلوس تصير قابلة للسحب فوراً
+  if (out.noHold) { try { if (await completeOrder(fs, id, 'auto')) out.status = 'completed'; } catch (e) { console.log('nohold', id, e.message); } }
   await purgeStore(out.slug);
   if (env) later(ctx, pushTo(fs, env, { uids: [out.storeId] }, out.status === 'delivered'
     ? { title: 'بيعة جديدة في متجرك 🎉', body: `طلب #${out.oid} تسلّم للزبون تلقائياً · ${fmtMoney(out.sub, out.cur)}`, link: 'app.html#store/orders', tag: 'order' }
     : { title: out.failed ? 'طلب يحتاج انتباهك' : 'طلب جديد يحتاج تسليم', body: `طلب #${out.oid} · ${fmtMoney(out.sub, out.cur)}${out.failed ? ' · فيه منتجات ما تسلّمتش' : ''}`, link: 'app.html#store/orders', tag: 'order' }));
-  const { storeId, sub, cur, oid, ...pub } = out;
+  const { storeId, sub, cur, oid, noHold, ...pub } = out;
   return pub;
 }
 
@@ -764,7 +777,7 @@ async function confirmOrder(fs, id, by, env, ctx) {
 async function merchantDeliver(fs, uid, id, body) {
   const idx = int(body.idx), text = clean(body.text, 1500);
   if (!text) throw new HttpError(400, 'اكتب رسالة التسليم (مثلاً: تم الشحن، أو الكود).');
-  return fs.tx(async (tx, W) => {
+  const r = await fs.tx(async (tx, W) => {
     const o = await fs.get(`orders/${id}`, { tx });
     if (!o || o.storeId !== uid) throw new HttpError(404, 'الطلب مش موجود.');
     if (!['preparing', 'problem', 'delivered'].includes(o.status)) throw new HttpError(409, 'الطلب لازم يكون مدفوع وما تقفلش.');
@@ -783,11 +796,15 @@ async function merchantDeliver(fs, uid, id, body) {
     const upd = { items, updatedAt: now };
     if (allDone && o.status === 'preparing') {
       const p = await platformOf(fs);
-      Object.assign(upd, { status: 'delivered', deliveredAt: now, autoAt: now + completeHours(p) * 3600e3, log: [...(o.log || []), { s: 'delivered', at: now, by: uid }].slice(-30) });
+      Object.assign(upd, { status: 'delivered', deliveredAt: now, autoAt: now + holdDaysOf(o, p) * DAY, log: [...(o.log || []), { s: 'delivered', at: now, by: uid }].slice(-30) });
+      if (holdDaysOf(o, p) === 0) upd.noHold = true;
     }
+    const noHold = upd.noHold; delete upd.noHold;
     W.push(fs.wUpdate(`orders/${id}`, upd));
-    return { status: upd.status || o.status };
+    return { status: upd.status || o.status, noHold };
   });
+  if (r.noHold && await completeOrder(fs, id, 'auto').catch(() => null)) r.status = 'completed';
+  return { status: r.status };
 }
 async function merchantReply(fs, uid, id, body) {
   const text = clean(body.text, 800);
@@ -795,6 +812,7 @@ async function merchantReply(fs, uid, id, body) {
   return fs.tx(async (tx, W) => {
     const o = await fs.get(`orders/${id}`, { tx });
     if (!o || o.storeId !== uid) throw new HttpError(404, 'الطلب مش موجود.');
+    if (o.claim?.open) { W.push(fs.wUpdate(`orders/${id}`, { claim: { ...o.claim, reply: text, replyAt: Date.now() }, updatedAt: Date.now() })); return { ok: true }; }
     if (o.status !== 'problem' || !o.problem) throw new HttpError(409, 'ما فيش بلاغ مفتوح على الطلب.');
     W.push(fs.wUpdate(`orders/${id}`, { problem: { ...o.problem, reply: text, replyAt: Date.now() }, updatedAt: Date.now() }));
     return { ok: true };
@@ -839,7 +857,7 @@ async function settleWallet(fs, sid) {
     if (!w || !(num(w.nextSettle) <= now)) return null;
     const amount = round2(w.available);
     const upd = { nextSettle: nextSettle(w.launchedAt, now), updatedAt: now };
-    if (amount > 0) {
+    if (amount > 0 && amount >= minPayout(await platformOf(fs), w.currency)) {
       const store = await fs.get(`stores/${sid}`, { tx, mask: ['name', 'slug'] });
       const pid = `${sid.slice(0, 12)}-${now.toString(36)}`;
       W.push(fs.wCreate(`payouts/${pid}`, { storeId: sid, storeName: clean(store?.name, 40), slug: store?.slug || '', currency: w.currency, amount, status: 'due', createdAt: now, month: monthKey(now), periodEnd: now }));
@@ -849,6 +867,27 @@ async function settleWallet(fs, sid) {
     W.push(fs.wUpdate(`wallets/${sid}`, upd));
     return amount;
   });
+}
+// التاجر يطلب سحب رصيده القابل للسحب (بدون ما يستنى التسوية الأسبوعية)
+async function requestPayout(fs, uid, env, ctx) {
+  const [priv, p] = await Promise.all([fs.get(`storePrivate/${uid}`), fs.get('settings/platform', { mask: ['minPayout'] })]);
+  if (!priv?.payout?.details) throw new HttpError(400, 'حدد وين توصلك أرباحك من إعدادات المتجر أولاً.');
+  const r = await fs.tx(async (tx, W) => {
+    const w = await fs.get(`wallets/${uid}`, { tx });
+    const amount = round2(w?.available);
+    if (!(amount > 0)) throw new HttpError(409, 'ما عندكش رصيد قابل للسحب.');
+    const min = minPayout(p, w.currency);
+    if (amount < min) throw new HttpError(409, `أقل مبلغ للسحب ${fmtMoney(min, w.currency)}. رصيدك توا ${fmtMoney(amount, w.currency)}.`);
+    const now = Date.now();
+    const store = await fs.get(`stores/${uid}`, { tx, mask: ['name', 'slug'] });
+    const pid = `${uid.slice(0, 12)}-${now.toString(36)}`;
+    W.push(fs.wCreate(`payouts/${pid}`, { storeId: uid, storeName: clean(store?.name, 40), slug: store?.slug || '', currency: w.currency, amount, status: 'due', requested: true, createdAt: now, month: monthKey(now), periodEnd: now }));
+    W.push(fs.wCreate(`ledger/${pid}-payout`, { storeId: uid, payoutId: pid, type: 'payout', amount: -amount, currency: w.currency, note: 'طلب سحب (قيد التحويل)', month: monthKey(now), at: now }));
+    W.push(fs.wUpdate(`wallets/${uid}`, { available: 0, inPayout: round2(num(w.inPayout) + amount), updatedAt: now }));
+    return { amount, cur: w.currency, name: clean(store?.name, 40) };
+  });
+  later(ctx, pushTo(fs, env, { roles: ['admin'] }, { title: 'طلب سحب أرباح 💸', body: `${r.name}: ${fmtMoney(r.amount, r.cur)}`, link: 'admin.html#payouts', tag: 'payout' }));
+  return { ok: true, amount: r.amount };
 }
 async function payoutPaid(fs, uid, id, body, env, ctx) {
   const reference = clean(body.reference, 120);
@@ -1140,6 +1179,8 @@ function cleanItem(x, cats) {
     type, name, desc: clean(x.desc, 800), cat, image: imgOrEmpty(x.image, 200000), imgV: x.image ? Math.max(0, int(x.imgV)) || Date.now() : 0,
     note: clean(x.note, 300), order: int(x.order), featured: x.featured === true, active: x.active !== false, updatedAt: Date.now()
   };
+  if (x.warranty === undefined || x.warranty === null || x.warranty === '' || !/^\d{1,3}$/.test(String(x.warranty))) throw new HttpError(400, 'حدد مدة ضمان المنتج بالأيام، أو اختار «بدون ضمان».');
+  it.warranty = Math.min(365, int(x.warranty));
   if (type === 'account') {
     it.productIds = (Array.isArray(x.productIds) ? x.productIds : []).map(String).filter(p => ID_RE.test(p)).slice(0, 10);
     it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 8);
@@ -1346,7 +1387,7 @@ function ipLimit(req, max = 8) {
   l.push(now); ipSends.set(ip, l);
   if (ipSends.size > 5000) ipSends.clear();
 }
-const SUMMARY_FIELDS = ['storeId', 'status', 'createdAt', 'deliveredAt', 'total', 'subtotal', 'fee', 'currency', 'items', 'problem', 'received'];
+const SUMMARY_FIELDS = ['storeId', 'status', 'createdAt', 'deliveredAt', 'total', 'subtotal', 'fee', 'currency', 'items', 'problem', 'received', 'holdDays', 'wDays', 'claim'];
 async function customerRoute(req, env, fs, slug, p, method) {
   const ctx = await storeCtx(fs, slug);
   if (!ctx) throw new HttpError(404, 'المتجر مش موجود.');
@@ -1378,13 +1419,17 @@ async function customerRoute(req, env, fs, slug, p, method) {
   if (p === '/api/me') return json({ email: c.email });
   if (p === '/api/my/orders') {
     const list = await fs.query('orders', [['customerKey', '==', c.key]], { limit: 60, select: SUMMARY_FIELDS });
-    const ch = completeHours(ctx.platform) * 3600e3, now = Date.now();
-    const out = list.filter(o => o.storeId === ctx.sid).sort((a, b) => num(b.createdAt) - num(a.createdAt)).slice(0, 40).map(o => ({
-      id: o.id, status: o.status, createdAt: num(o.createdAt), deliveredAt: num(o.deliveredAt), total: o.total, currency: o.currency,
-      items: (o.items || []).map(i => ({ name: i.name, opt: i.opt, qty: i.qty })),
-      warrantyEnd: o.deliveredAt ? num(o.deliveredAt) + ch : 0,
-      canReport: o.status === 'preparing' || (o.status === 'delivered' && now < num(o.deliveredAt) + ch)
-    }));
+    const now = Date.now();
+    const out = list.filter(o => o.storeId === ctx.sid).sort((a, b) => num(b.createdAt) - num(a.createdAt)).slice(0, 40).map(o => {
+      const dl = num(o.deliveredAt), ch = holdDaysOf(o, ctx.platform) * DAY, md = merchDaysOf(o, ctx.platform);
+      const end = dl ? dl + Math.max(ch, md * DAY) : 0;
+      return {
+        id: o.id, status: o.status, createdAt: num(o.createdAt), deliveredAt: dl, total: o.total, currency: o.currency,
+        items: (o.items || []).map(i => ({ name: i.name, opt: i.opt, qty: i.qty })),
+        warrantyEnd: end, noWarranty: md === 0, claimOpen: !!o.claim?.open,
+        canReport: o.status === 'preparing' || (o.status === 'delivered' && now < dl + ch) || (o.status === 'completed' && md > 0 && now < dl + md * DAY && !o.claim?.open)
+      };
+    });
     return json({ email: c.email, warrantyDays: warrantyDays(ctx.platform), orders: out });
   }
   if (p === '/api/my/claim') {
@@ -1443,10 +1488,11 @@ async function storeRoute(req, env, ctx, slug, url, host) {
     const o = await orderForCustomer(req, fs, slug, m[1]);
     if (m[2] === 'received') {
       // الزبون أكد إن كل شي تمام (أو إن المشكلة انحلت). الضمان يكمل لين آخر مدته، وبعدها الفلوس تتحول للتاجر
-      const ch = completeHours(await platformOf(fs)) * 3600e3;
+      const ch = holdDaysOf(o, await platformOf(fs)) * DAY;
       await fs.tx(async (tx, W) => {
         const x = await fs.get(`orders/${o.id}`, { tx });
         const now = Date.now();
+        if (x.claim?.open) { W.push(fs.wUpdate(`orders/${o.id}`, { claim: { ...x.claim, open: false, solvedAt: now }, open: false, updatedAt: now, log: [...(x.log || []), { s: 'claim-solved', at: now, by: 'customer' }].slice(-30) })); return; }
         if (x.status === 'delivered') { if (!x.received) W.push(fs.wUpdate(`orders/${o.id}`, { received: true, receivedAt: now, updatedAt: now })); return; }
         if (x.status !== 'problem') throw new HttpError(409, 'الطلب لسه ما تسلّمش.');
         const allDone = (x.items || []).every(i => i.status === 'delivered');
@@ -1459,17 +1505,26 @@ async function storeRoute(req, env, ctx, slug, url, host) {
       const body = await readJson(req, 4000);
       const text = clean(body.text, 600);
       if (text.length < 5) throw new HttpError(400, 'اشرح المشكلة باختصار.');
-      const ch = completeHours(await platformOf(fs)) * 3600e3;
-      await fs.tx(async (tx, W) => {
+      const pf = await platformOf(fs);
+      const kind = await fs.tx(async (tx, W) => {
         const x = await fs.get(`orders/${o.id}`, { tx });
-        const can = x.status === 'preparing' || (x.status === 'delivered' && Date.now() < num(x.deliveredAt) + ch);
-        if (!can) throw new HttpError(409, x.status === 'problem' ? 'فيه بلاغ مفتوح على الطلب.' : 'مدة البلاغ انتهت.');
-        const now = Date.now();
-        W.push(fs.wUpdate(`orders/${o.id}`, { status: 'problem', autoAt: null, problem: { text, at: now, by: 'customer' }, updatedAt: now, log: [...(x.log || []), { s: 'problem', at: now, by: 'customer' }].slice(-30) }));
+        const now = Date.now(), dl = num(x.deliveredAt), ch = holdDaysOf(x, pf) * DAY, md = merchDaysOf(x, pf);
+        if (x.status === 'preparing' || (x.status === 'delivered' && now < dl + ch)) {
+          W.push(fs.wUpdate(`orders/${o.id}`, { status: 'problem', autoAt: null, problem: { text, at: now, by: 'customer' }, updatedAt: now, log: [...(x.log || []), { s: 'problem', at: now, by: 'customer' }].slice(-30) }));
+          return 'problem';
+        }
+        // بعد ضمان ملفي: بلاغ على ضمان التاجر (الفلوس اتحولت للتاجر)
+        if (x.status === 'completed' && dl && md > 0 && now < dl + md * DAY && !x.claim?.open) {
+          W.push(fs.wUpdate(`orders/${o.id}`, { open: true, claim: { text, at: now, open: true }, updatedAt: now, log: [...(x.log || []), { s: 'claim', at: now, by: 'customer' }].slice(-30) }));
+          return 'claim';
+        }
+        if (x.status === 'problem' || x.claim?.open) throw new HttpError(409, 'فيه بلاغ مفتوح على الطلب.');
+        if (dl && md === 0) throw new HttpError(409, 'المنتج هذا بدون ضمان.');
+        throw new HttpError(409, 'مدة الضمان انتهت.');
       });
       later(ctx, Promise.all([
-        pushTo(fs, env, { uids: [o.storeId] }, { title: 'بلاغ من زبون', body: `طلب #${o.id}: ${text.slice(0, 80)}`, link: 'app.html#store/orders', tag: 'problem' }),
-        pushTo(fs, env, { roles: ['admin'] }, { title: 'بلاغ على طلب متجر', body: `${clean(o.storeName, 40)} · #${o.id}`, link: 'admin.html#sorders', tag: 'problem' })
+        pushTo(fs, env, { uids: [o.storeId] }, { title: kind === 'claim' ? 'بلاغ ضمان من زبون' : 'بلاغ من زبون', body: `طلب #${o.id}: ${text.slice(0, 80)}`, link: 'app.html#store/orders', tag: 'problem' }),
+        pushTo(fs, env, { roles: ['admin'] }, { title: kind === 'claim' ? 'بلاغ على ضمان متجر' : 'بلاغ على طلب متجر', body: `${clean(o.storeName, 40)} · #${o.id}`, link: 'admin.html#sorders', tag: 'problem' })
       ]));
     }
     return json(await customerView(fs, { ...(await fs.get(`orders/${o.id}`)), id: o.id }, slug));
@@ -1510,6 +1565,7 @@ async function apiRoute(req, env, ctx, url) {
     const MER = { '/m/store/create': storeCreate, '/m/store/save': storeSave, '/m/store/slug': storeSlug, '/m/store/cats': storeCats, '/m/items/save': itemSave, '/m/items/delete': itemDelete, '/m/items/active': itemActive, '/m/items/sync': itemSync };
     if (MER[p]) return send(await MER[p](fs, who.uid, body));
     if (p === '/m/notify/request') return send(await notifyRequest(fs, env, who.uid, body));
+    if (p === '/m/wallet/withdraw') return send(await requestPayout(fs, who.uid, env, ctx));
     const staff = user.role === 'admin' || user.role === 'staff', admin = user.role === 'admin';
     if (!staff) throw new HttpError(403, 'ما عندكش صلاحية.');
     if ((m = p.match(/^\/a\/orders\/([A-Za-z0-9]{1,20})\/(confirm|reject|resolve)$/))) {
