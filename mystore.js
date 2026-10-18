@@ -1,7 +1,7 @@
 // ملفي — متجر التاجر: الإنشاء، المنتجات، التصميم، الطلبات، المحفظة
 import {
   db, $, $$, esc, num, icon, toast, modal, confirmBox, busy, empty, skeleton, fmtDate, fmtShort, ago, tsMs, DAY, addMonths, monthsTxt,
-  normPhone, waLink, copyText, compressImage, safeImg, apiPost, storeUrl, ROOT_DOMAIN, t, isEN, pushCardHTML,
+  toInput, fromInput, normPhone, waLink, copyText, compressImage, safeImg, apiPost, storeUrl, ROOT_DOMAIN, t, isEN, pushCardHTML,
   collection, doc, onSnapshot, query, where, setDoc, getDoc
 } from './core.js';
 import { TEMPLATES, PALETTES, FONTS, CARDS, CORNERS, SECTIONS, CAT_ICONS, normDesign, normSections, colorsOf, ic as sic } from './store-theme.js';
@@ -90,20 +90,24 @@ export function storeBell() {
 // كل ما يتغير المخزون (ملفات، أكواد، أرقام) نحدّث الكميات المعروضة في المتجر
 export function scheduleSync() { clearTimeout(M.syncT); M.syncT = setTimeout(syncStock, 1200); }
 const maskNumber = n => { const s = String(n || ''); const total = (s.match(/\d/g) || []).length; let i = 0; return s.replace(/\d/g, c => { const k = i++; return k < 3 || k >= total - 2 ? c : '•'; }); };
-function monthsAvail(accountEnd) { const now = Date.now(); let m = 0; while (m < 24 && addMonths(now, m + 1) - DAY <= accountEnd) m++; return m; }
+// شهر = 30 يوم بالضبط
+function monthsAvail(accountEnd) { const now = Date.now(); let m = 0; while (m < 24 && now + (m + 1) * 30 * DAY - DAY <= accountEnd) m++; return m; }
 function computeStock(it) {
   const S = A.S;
   if (it.type === 'code') return { stock: S.codes.filter(c => c.productId === it.productId && c.status === 'available').length };
   if (it.type === 'account') {
     const pids = new Set(it.productIds || []);
     let stock = 0, maxMonths = 0;
+    const ends = [];
     S.files.forEach(f => {
       if (!pids.has(f.productId) || f.status !== 'available') return;
       const p = S.products.find(x => x.id === f.productId); if (!p || p.type !== 'account') return;
+      ends.push(+p.accountEnd || 0);
       const mm = monthsAvail(p.accountEnd); if (mm < 1) return;
       stock++; maxMonths = Math.max(maxMonths, mm);
     });
-    return { stock, maxMonths };
+    const untilN = (it.untils || []).map(u => ({ d: u.d, n: ends.filter(e => e >= u.d).length }));
+    return { stock, maxMonths, untilN };
   }
   if (it.type === 'number') {
     const av = S.numbers.filter(n => n.status === 'available');
@@ -293,7 +297,7 @@ function itemsView() {
   ${list.length ? `<div class="plist">${list.map(it => {
     const img = safeImg(it.image);
     const from = priceFrom(it);
-    const out = (it.stock || 0) < 1;
+    const out = (it.stock || 0) < 1 && !(it.untilN || []).some(u => u.n > 0 && u.d > Date.now());
     return `<article class="card pcard rv" style="${it.active === false ? 'opacity:.6' : ''}">
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start">${img ? `<img src="${img}" alt="" style="width:64px;height:64px;border-radius:14px;object-fit:cover;flex:none">` : `<span class="fic" style="width:64px;height:64px;border-radius:14px">${icon(TYPE_IC[it.type])}</span>`}
         <div class="fmid"><b data-raw>${esc(it.name)}</b><small>${t(TYPE_LBL[it.type])} · ${cats.find(c => c.id === it.cat) ? `<span data-raw>${esc(cats.find(c => c.id === it.cat).name)}</span>` : `<span class="t-bad">${t('بدون قسم')}</span>`}</small>
@@ -315,7 +319,7 @@ function stockHint(it) {
 }
 function priceFrom(it) {
   let l = [];
-  if (it.type === 'account') l = (it.durations || []).map(d => d.price);
+  if (it.type === 'account') l = [...(it.durations || []).map(d => d.price), ...(it.untils || []).map(u => u.price)];
   else if (it.type === 'code') l = [it.price];
   else if (it.type === 'number') l = it.mode === 'pick' ? (it.numbers || []).map(n => n.price) : (it.prices || []).map(p => p.price);
   else l = (it.packs || []).map(p => p.price);
@@ -346,7 +350,11 @@ function itemForm(it) {
     body = accs.length ? `<label class="small muted" style="display:block;margin-bottom:8px">${t('الحسابات اللي يتسلّم منها (يختار النظام ملف متاح تلقائياً)')}</label>
       <div class="chips" style="margin-bottom:14px">${names.map(n => `<button type="button" class="chip ${(it.productIds || []).some(id => accs.find(p => p.id === id)?.name === n) ? 'on' : ''}" data-accname="${esc(n)}"><span data-raw>${esc(n)}</span>&nbsp;<span class="dim">${accs.filter(p => p.name === n).length}</span></button>`).join('')}</div>
       <label class="small muted" style="display:block;margin-bottom:8px">${t('المدد والأسعار (فاضي = ما تظهرش)')}</label>
-      <div class="grid3 keep">${durs.map(d => `<div class="field"><label>${t(monthsTxt(d))}</label><input data-dur="${d}" inputmode="decimal" dir="ltr" value="${(it.durations || []).find(x => x.m === d)?.price ?? ''}"></div>`).join('')}</div>`
+      <div class="grid3 keep">${durs.map(d => `<div class="field"><label>${t(monthsTxt(d))} <span class="dim">(${d * 30} ${t('يوم')})</span></label><input data-dur="${d}" inputmode="decimal" dir="ltr" value="${(it.durations || []).find(x => x.m === d)?.price ?? ''}"></div>`).join('')}</div>
+      <label class="small muted" style="display:block;margin:4px 0 8px">${t('لين تاريخ معين (للحسابات اللي باقيلها أقل من شهر مثلاً)')}</label>
+      <div id="ifUntils">${(it.untils || []).filter(u => u.d > Date.now()).map(untilRow).join('')}</div>
+      <button type="button" class="btn ghost sm" id="ifAddUntil" style="margin-bottom:6px">${icon('plus')} ${t('تاريخ')}</button>
+      <p class="hint" style="margin-bottom:14px">${t('الزبون يشوف «لين التاريخ» بالسعر اللي تحطه، وينباع من الحسابات اللي ما تنتهيش قبله. المدد 7 أيام أو أقل ملفي ما تضمنهاش.')}</p>`
       : `<p class="t-bad" style="margin-bottom:14px">${t('ما عندكش حسابات. أضف حساب من صفحة المنتجات أولاً.')}</p>`;
   } else if (type === 'code') {
     body = codes.length ? `<div class="field"><label>${t('فئة الأكواد')}</label><select id="ifProd">${codes.map(p => `<option value="${esc(p.id)}" ${it.productId === p.id ? 'selected' : ''} data-raw>${esc(p.name)} (${S.codes.filter(c => c.productId === p.id && c.status === 'available').length})</option>`).join('')}</select></div>
@@ -396,6 +404,7 @@ function itemForm(it) {
   $$('[data-accname]', el).forEach(b => b.onclick = () => b.classList.toggle('on'));
   let mode = it.mode || 'country';
   $$('[data-mode]', el).forEach(b => b.onclick = () => { mode = b.dataset.mode; $$('[data-mode]', el).forEach(x => x.classList.toggle('on', x === b)); $('#ifCtry', el).hidden = mode === 'pick'; $('#ifPickHint', el).hidden = mode !== 'pick'; });
+  const au = $('#ifAddUntil', el); if (au) au.onclick = () => { if ($$('.untilrow', el).length < 6) $('#ifUntils', el).insertAdjacentHTML('beforeend', untilRow({})); };
   const ap = $('#ifAddPack', el); if (ap) ap.onclick = () => { if ($$('.packrow', el).length < 20) $('#ifPacks', el).insertAdjacentHTML('beforeend', packRow({})); };
   const af = $('#ifAddField', el); if (af) af.onclick = () => { if ($$('.fieldrow', el).length < 4) $('#ifFields', el).insertAdjacentHTML('beforeend', fieldRow({})); };
   el.addEventListener('click', e => { const d = e.target.closest('[data-rm]'); if (d) d.closest('.frow').remove(); });
@@ -413,9 +422,12 @@ function itemForm(it) {
       const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
       d.productIds = accs.filter(p => names.includes(p.name)).map(p => p.id).slice(0, 10);
       d.durations = durs.map(m => ({ m, price: round2(num($(`[data-dur="${m}"]`, el)?.value)) })).filter(x => x.price > 0);
+      d.untils = $$('.untilrow', el).map(r => ({ d: fromInput($('[data-ud]', r).value), price: round2(num($('[data-up]', r).value)) })).filter(u => u.d && u.price > 0);
+      if ($$('.untilrow', el).some(r => ($('[data-ud]', r).value && !(num($('[data-up]', r).value) > 0)) || (!$('[data-ud]', r).value && num($('[data-up]', r).value) > 0))) throw new Error(t('كل تاريخ لازم يكون معاه سعر.'));
+      if (d.untils.some(u => u.d <= Date.now())) throw new Error(t('التاريخ لازم يكون بعد اليوم.'));
       if (!d.productIds.length) throw new Error(t('اختار حساب واحد على الأقل.'));
       if (accs.filter(p => names.includes(p.name)).length > 10) throw new Error(t('أقصى حد 10 حسابات للمنتج الواحد.'));
-      if (!d.durations.length) throw new Error(t('حط سعر لمدة وحدة على الأقل.'));
+      if (!d.durations.length && !d.untils.length) throw new Error(t('حط سعر لمدة وحدة على الأقل، أو تاريخ انتهاء بسعره.'));
     } else if (type === 'code') {
       d.productId = $('#ifProd', el)?.value || ''; d.price = round2(num($('#ifPrice', el)?.value)); d.maxQty = Math.min(10, Math.max(1, Math.floor(num($('#ifMax', el)?.value)) || 10));
       if (!d.productId) throw new Error(t('اختار فئة الأكواد.'));
@@ -434,6 +446,7 @@ function itemForm(it) {
     m.close(); toast(t('تم الحفظ'));
   });
 }
+const untilRow = u => `<div class="frow untilrow"><input class="inp" type="date" data-ud value="${u.d ? toInput(u.d) : ''}" min="${toInput(Date.now() + DAY)}"><input class="inp" data-up inputmode="decimal" dir="ltr" placeholder="${t('السعر')}" value="${u.price ?? ''}"><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 const packRow = p => `<div class="frow packrow"><input class="inp" data-pl maxlength="60" placeholder="${t('مثلاً: 60 شدة')}" value="${esc(p.label || '')}"><input class="inp" data-pp inputmode="decimal" dir="ltr" placeholder="${t('السعر')}" value="${p.price ?? ''}"><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 const fieldRow = f => `<div class="frow fieldrow"><input class="inp" data-fl maxlength="40" placeholder="${t('اسم الحقل')}" value="${esc(f.label || '')}"><label class="row small" style="gap:6px"><input type="checkbox" data-fr ${f.req !== false ? 'checked' : ''}>${t('إجباري')}</label><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 async function itemDel(it) {
@@ -454,7 +467,7 @@ function previewPayload() {
   const d = M.ed, s = M.store;
   const items = M.items.filter(i => i.active !== false).map(it => {
     const o = { id: it.id, type: it.type, name: it.name, desc: it.desc || '', cat: it.cat || '', wd: it.warranty ?? null, featured: !!it.featured, order: num(it.order), note: it.note || '', img: safeImg(it.image), stock: it.stock || 0 };
-    if (it.type === 'account') Object.assign(o, { durations: (it.durations || []).filter(x => x.price > 0), maxMonths: it.maxMonths || 0 });
+    if (it.type === 'account') Object.assign(o, { durations: (it.durations || []).filter(x => x.price > 0), maxMonths: it.maxMonths || 0, untils: (it.untils || []).filter(u => u.d > Date.now()).map(u => ({ ...u, n: (it.untilN || []).find(x => x.d === u.d)?.n || 0 })) });
     if (it.type === 'code') Object.assign(o, { price: it.price, maxQty: it.maxQty || 10 });
     if (it.type === 'number') { o.mode = it.mode === 'pick' ? 'pick' : 'country'; if (o.mode === 'pick') o.numbers = it.numbers || []; else o.prices = (it.prices || []).map(p => ({ ...p, n: (it.countries || []).find(c => c.country === p.country)?.n || 0 })); }
     if (it.type === 'manual') Object.assign(o, { packs: it.packs || [], fields: it.fields || [] });

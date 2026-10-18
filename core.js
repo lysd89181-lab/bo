@@ -55,6 +55,10 @@ export const startOfDay = (ms = Date.now()) => { const d = new Date(ms); d.setHo
 export const addMonths = (ms, m) => { const d = new Date(ms); const day = d.getDate(); d.setMonth(d.getMonth() + m); if (d.getDate() < day) d.setDate(0); return d.getTime(); };
 export const daysLeft = ms => Math.ceil((ms - Date.now()) / DAY);
 // عدد الأشهر (مقرّب للأعلى) بين تاريخين
+// شهر الاشتراكات = 30 يوم بالضبط
+export const SUB_MONTH = 30 * 864e5;
+export const addSubMonths = (ms, m) => ms + m * SUB_MONTH;
+export const subMonthsCeil = (a, b) => b <= a ? 0 : Math.min(240, Math.ceil((b - a) / SUB_MONTH - 1e-9));
 export const monthsCeil = (a, b) => { if (b <= a) return 0; let m = 0; while (addMonths(a, m) < b && m < 240) m++; return m; };
 export const tsMs = t => !t ? 0 : typeof t === 'number' ? t : t.toMillis ? t.toMillis() : 0;
 export const ago = ms => {

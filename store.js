@@ -10,6 +10,8 @@ const SYM = { LYD: 'د.ل', SAR: 'ر.س', USDT: 'USDT' };
 const money = (n, cur) => `⁦${fmt(n)} ${SYM[cur || B.store.currency] || ''}⁩`;
 const monthsTxt = m => m === 1 ? 'شهر' : m === 2 ? 'شهرين' : m <= 10 ? `${m} أشهر` : `${m} شهر`;
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+const dayTxt = ms => { const d = new Date(ms); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const untilDays = d => Math.max(1, Math.round((d - Date.now()) / 864e5));
 const when = ms => { if (!ms) return ''; const d = new Date(ms); return `${d.getDate()} ${MONTHS[d.getMonth()]}، ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const IMG_OK = v => typeof v === 'string' && (/^\/img\/[A-Za-z0-9/_-]+(\?v=\d+)?$/.test(v) || /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v)) ? v : '';
 const safeUrl = (v, hosts) => { try { const u = new URL(String(v || '')); if (!/^https?:$/.test(u.protocol)) return ''; if (hosts && !hosts.some(h => u.hostname === h || u.hostname.endsWith('.' + h))) return ''; return u.href; } catch { return ''; } };
@@ -41,7 +43,13 @@ const dTxt = d => d === 1 ? 'يوم' : d === 2 ? 'يومين' : d <= 10 ? `${d} 
 const itemWd = it => it?.wd == null ? wDays() : +it.wd;
 // شارة الضمان للمنتج: ملفي تضمن لحد أيامها، والتاجر يضمن الباقي
 function warrBadge(it) {
-  const d = itemWd(it), m = Math.min(d, wDays());
+  let d = itemWd(it);
+  if (it.type === 'account' && d) {
+    const sm = selOf(it).m, days = /^d\d+$/.test(String(sm)) ? untilDays(+String(sm).slice(1)) : (+sm || 1) * 30;
+    if (days <= 7) return `<div class="note warn">${ic('alert')}<span><b>المدة هذي (${dTxt(days)}) بدون ضمان.</b> ملفي تضمن المدد اللي فوق 7 أيام بس.</span></div>`;
+    d = Math.min(d, days);
+  }
+  const m = Math.min(d, wDays());
   if (!d) return `<div class="note warn">${ic('alert')}<span><b>بدون ضمان.</b> المنتج هذا ما عليهش ضمان من المتجر ولا من ملفي.</span></div>`;
   return `<div class="note ok">${ic('shield')}<span><b>ضمان ${dTxt(d)}</b>${d > m ? `: ملفي تضمن أول ${dTxt(m)}، والمتجر يضمن الباقي.` : ' مضمون من ملفي.'} لو صارت مشكلة بلّغ من «طلباتي».</span></div>`;
 }
@@ -83,7 +91,7 @@ const slugKey = k => `${k}:${PREVIEW ? 'preview' : B.store.slug}`;
 const art = (it, cls = 'art') => { const src = IMG_OK(it.img); return `<div class="${cls} artbg">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : ic(TYPE_ICON[it.type] || 'star', 1.4)}</div>`; };
 function priceInfo(it) {
   let list = [];
-  if (it.type === 'account') list = (it.durations || []).map(d => d.price);
+  if (it.type === 'account') list = [...(it.durations || []).filter(d => d.m <= (it.maxMonths || 0) || !(it.untils || []).some(u => u.n > 0)).map(d => d.price), ...(it.untils || []).filter(u => u.n > 0).map(u => u.price)];
   else if (it.type === 'code') list = [it.price];
   else if (it.type === 'number') list = it.mode === 'pick' ? (it.numbers || []).map(n => n.price) : (it.prices || []).filter(p => p.n > 0).map(p => p.price);
   else if (it.type === 'manual') list = (it.packs || []).map(p => p.price);
@@ -91,7 +99,7 @@ function priceInfo(it) {
   list = list.filter(x => x > 0);
   return { min: list.length ? Math.min(...list) : 0, many: new Set(list).size > 1 || (it.type === 'account' && (it.durations || []).length > 1) };
 }
-const inStock = it => (it.stock || 0) > 0;
+const inStock = it => (it.stock || 0) > 0 || (it.type === 'account' && (it.untils || []).some(u => u.n > 0));
 function pcard(it) {
   const { min, many } = priceInfo(it); const out = !inStock(it);
   const quick = it.type === 'code' && !out;
@@ -151,14 +159,18 @@ function catHTML(id) {
 }
 function selOf(it) {
   if (!sel[it.id]) {
-    const firstD = (it.durations || []).find(d => d.m <= (it.maxMonths || 0)) || (it.durations || [])[0];
+    const firstU = (it.untils || []).find(u => u.n > 0);
+    const firstD = (it.durations || []).find(d => d.m <= (it.maxMonths || 0)) || (firstU ? { m: 'd' + firstU.d } : null) || (it.durations || [])[0];
     const firstC = (it.prices || []).find(p => p.n > 0) || (it.prices || [])[0];
     sel[it.id] = { m: firstD?.m || 1, pack: 0, numberId: (it.numbers || [])[0]?.id || '', country: firstC?.country || '', qty: 1, input: [] };
   }
   return sel[it.id];
 }
 function unitFor(it, s) {
-  if (it.type === 'account') { const d = (it.durations || []).find(x => x.m === s.m); return { unit: d?.price || 0, max: d && d.m <= (it.maxMonths || 0) ? Math.min(5, it.stock || 0) : 0 }; }
+  if (it.type === 'account') {
+    if (/^d\d+$/.test(String(s.m))) { const u = (it.untils || []).find(x => 'd' + x.d === s.m); return { unit: u?.price || 0, max: u ? Math.min(5, u.n || 0) : 0 }; }
+    const d = (it.durations || []).find(x => x.m === s.m); return { unit: d?.price || 0, max: d && d.m <= (it.maxMonths || 0) ? Math.min(5, it.stock || 0) : 0 };
+  }
   if (it.type === 'code') return { unit: it.price, max: Math.min(it.maxQty || 10, it.stock || 0) };
   if (it.type === 'number' && it.mode === 'pick') { const n = (it.numbers || []).find(x => x.id === s.numberId); return { unit: n?.price || 0, max: n ? 1 : 0 }; }
   if (it.type === 'number') { const p = (it.prices || []).find(x => x.country === s.country); return { unit: p?.price || 0, max: p ? Math.min(10, p.n) : 0 }; }
@@ -173,7 +185,7 @@ function prodHTML(id) {
   let opts = '', note = '';
   const radio = (on, act, val, label, price, disabled, small = '') => `<button type="button" class="opt ${on ? 'on' : ''}" data-a="${act}" data-v="${esc(val)}" ${disabled ? 'disabled' : ''}><span class="rad"></span><span class="grow">${label}${small ? `<small>${small}</small>` : ''}</span><b class="num">${money(price)}</b></button>`;
   if (it.type === 'account') {
-    opts = `<div class="lbl">اختار المدة</div>${(it.durations || []).map(d => radio(s.m === d.m, 'm', d.m, monthsTxt(d.m), d.price, d.m > (it.maxMonths || 0) || !inStock(it), d.m > (it.maxMonths || 0) && inStock(it) ? 'غير متاحة حالياً' : '')).join('')}`;
+    opts = `<div class="lbl">اختار المدة</div>${(it.durations || []).map(d => radio(s.m === d.m, 'm', d.m, monthsTxt(d.m), d.price, d.m > (it.maxMonths || 0) || !(it.stock > 0), d.m > (it.maxMonths || 0) ? 'غير متاحة حالياً' : `${d.m * 30} يوم`)).join('')}${(it.untils || []).map(u => radio(s.m === 'd' + u.d, 'm', 'd' + u.d, `لين ${dayTxt(u.d)}`, u.price, !(u.n > 0), u.n > 0 ? `${untilDays(u.d)} يوم${untilDays(u.d) <= 7 ? ' · بدون ضمان ملفي' : ''}` : 'غير متاحة حالياً')).join('')}`;
     note = `<div class="note info">${ic('bolt')}<span>يوصلك فوراً بعد تأكيد الدفع: الإيميل، كلمة المرور، ورقم الملف.</span></div>`;
   } else if (it.type === 'code') {
     note = `<div class="note info">${ic('bolt')}<span>الكود يوصلك فوراً بعد تأكيد الدفع.</span></div>`;
@@ -198,7 +210,8 @@ function prodHTML(id) {
 function lineInfo(l) {
   const it = item(l.itemId); if (!it) return null;
   let unit = 0, sub = '', max = 0, ok = true;
-  if (it.type === 'account') { const d = (it.durations || []).find(x => x.m === +l.opt); if (!d) return null; unit = d.price; sub = monthsTxt(d.m); max = d.m <= (it.maxMonths || 0) ? Math.min(5, it.stock || 0) : 0; }
+  if (it.type === 'account' && /^d\d+$/.test(String(l.opt))) { const u = (it.untils || []).find(x => 'd' + x.d === l.opt); if (!u) return null; unit = u.price; sub = `لين ${dayTxt(u.d)}`; max = Math.min(5, u.n || 0); }
+  else if (it.type === 'account') { const d = (it.durations || []).find(x => x.m === +l.opt); if (!d) return null; unit = d.price; sub = monthsTxt(d.m); max = d.m <= (it.maxMonths || 0) ? Math.min(5, it.stock || 0) : 0; }
   else if (it.type === 'code') { unit = it.price; max = Math.min(it.maxQty || 10, it.stock || 0); }
   else if (it.type === 'number' && it.mode === 'pick') { const n = (it.numbers || []).find(x => x.id === l.numberId); if (!n) return null; unit = n.price; sub = `<span class="ltr">${esc(n.mask)}</span>`; max = 1; }
   else if (it.type === 'number') { const p = (it.prices || []).find(x => x.country === l.opt); if (!p) return null; unit = p.price; sub = esc(p.country); max = Math.min(10, p.n || 0); }
@@ -494,7 +507,7 @@ async function orderAction(kind) {
 }
 const ACT = {
   back, quick: id => { const it = item(id); if (it) addToCart(it, selOf(it), 1); },
-  m: v => { selOf(item(route.id)).m = +v; render(false); },
+  m: v => { selOf(item(route.id)).m = /^d\d+$/.test(v) ? v : +v; render(false); },
   num: v => { selOf(item(route.id)).numberId = v; render(false); },
   ctry: v => { selOf(item(route.id)).country = v; render(false); },
   pack: v => { selOf(item(route.id)).pack = +v; render(false); },

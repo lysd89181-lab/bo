@@ -12,7 +12,7 @@ const OPEN = ['awaiting', 'preparing', 'delivered', 'problem'];
 const CUR_SYM = { LYD: 'د.ل', SAR: 'ر.س', USDT: 'USDT' };
 const ASSETS = { '/store.js': 'text/javascript; charset=utf-8', '/store.css': 'text/css; charset=utf-8', '/store-theme.js': 'text/javascript; charset=utf-8' };
 const STORE_FIELDS = ['ownerId', 'slug', 'name', 'country', 'currency', 'status', 'suspended', 'design', 'sections', 'info', 'categories', 'logoV', 'coverV', 'launchedAt', 'updatedAt', 'payMethods'];
-const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt', 'warranty'];
+const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt', 'warranty', 'untils', 'untilN'];
 const USER_FIELDS = ['isActive', 'planExpiresAt', 'plan', 'status', 'storeAccess', 'role', 'displayName'];
 
 class HttpError extends Error { constructor(status, message, extra) { super(message); this.status = status; this.extra = extra || {}; } }
@@ -27,6 +27,8 @@ const int = v => { const n = Math.floor(num(v)); return Number.isFinite(n) ? n :
 const clean = (v, max) => String(v ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g, '').trim().slice(0, max);
 const escHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const monthKey = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
+// شهر الاشتراكات = 30 يوم بالضبط
+const SUB_MONTH = 30 * DAY;
 const addMonths = (ms, m) => { const d = new Date(ms); const day = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + m); if (d.getUTCDate() < day) d.setUTCDate(0); return d.getTime(); };
 const fmtDate = ms => { const d = new Date(ms + 2 * 3600e3); return `${String(d.getUTCDate()).padStart(2, '0')} ${MONTHS_AR[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
 const monthsTxt = m => m === 1 ? 'شهر' : m === 2 ? 'شهرين' : m <= 10 ? `${m} أشهر` : `${m} شهر`;
@@ -328,6 +330,8 @@ function pubItem(it) {
   if (it.type === 'account') {
     o.durations = (Array.isArray(it.durations) ? it.durations : []).map(d => ({ m: int(d?.m), price: round2(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).sort((a, b) => a.m - b.m).slice(0, 8);
     o.stock = Math.max(0, int(it.stock)); o.maxMonths = Math.max(0, int(it.maxMonths));
+    const un = new Map((Array.isArray(it.untilN) ? it.untilN : []).map(u => [int(u?.d), Math.max(0, int(u?.n))]));
+    o.untils = (Array.isArray(it.untils) ? it.untils : []).map(u => ({ d: int(u?.d), price: round2(u?.price) })).filter(u => u.price > 0 && u.d > Date.now() + 12 * 3600e3).sort((a, b) => a.d - b.d).slice(0, 6).map(u => ({ ...u, n: un.get(u.d) || 0 }));
   } else if (it.type === 'code') {
     o.price = round2(it.price); o.stock = Math.max(0, int(it.stock)); o.maxQty = Math.min(10, Math.max(1, int(it.maxQty) || 10));
   } else if (it.type === 'number') {
@@ -476,23 +480,27 @@ async function createOrder(req, env, fs, slug, ectx) {
         pick.forEach(d => { reserved.push({ c: 'codes', id: d.id, line: lineIdx }); mark(it.id, 'codes', d.id); });
         extra = { src: { productId: it.productId } };
       } else if (it.type === 'account') {
-        const months = int(l.opt);
-        const dur = (Array.isArray(it.durations) ? it.durations : []).find(d => int(d?.m) === months && num(d?.price) > 0);
-        if (!dur || months < 1 || months > 24) throw new HttpError(409, `المدة المختارة لـ ${nm} ما عادتش متاحة.`, { code: 'stale' });
+        const byDate = /^d\d{10,15}$/.test(String(l.opt || ''));
+        const months = byDate ? 0 : int(l.opt), until = byDate ? int(String(l.opt).slice(1)) : 0;
+        const dur = byDate
+          ? (Array.isArray(it.untils) ? it.untils : []).filter(u => int(u?.d) === until && num(u?.price) > 0 && until > now + 12 * 3600e3).map(u => ({ price: u.price }))[0]
+          : (Array.isArray(it.durations) ? it.durations : []).find(d => int(d?.m) === months && num(d?.price) > 0);
+        if (!dur || (!byDate && (months < 1 || months > 24))) throw new HttpError(409, `المدة المختارة لـ ${nm} ما عادتش متاحة.`, { code: 'stale' });
         if (l.qty > 5) throw new HttpError(400, `أقصى كمية من ${nm} هي 5.`);
         const pids = (Array.isArray(it.productIds) ? it.productIds : []).filter(p => ID_RE.test(String(p))).slice(0, 10);
         if (!pids.length) throw new HttpError(409, `${nm} غير متاح حالياً.`, { code: 'stale' });
-        unit = round2(dur.price); opt = monthsTxt(months);
+        unit = round2(dur.price); opt = byDate ? `لين ${fmtDate(until)}` : monthsTxt(months);
         const [files, prods] = await Promise.all([
           fs.query('files', [['productId', 'in', pids], ['status', '==', 'available']], { parent: `merchants/${sid}`, limit: 60, tx, select: ['productId', 'fileNumber', 'status'] }),
           fs.getMany(pids.map(p => `merchants/${sid}/products/${p}`), { tx, mask: ['accountEnd', 'type'] })
         ]);
         const endOf = Object.fromEntries(pids.map((p, i) => [p, prods[i]?.type === 'account' ? num(prods[i].accountEnd) : 0]));
-        const need = addMonths(now, months) - DAY;
+        const need = byDate ? until : now + months * SUB_MONTH - DAY;
         const ok = files.filter(f => !taken.has('files/' + f.id) && endOf[f.productId] >= need).sort((a, b) => endOf[a.productId] - endOf[b.productId] || num(a.fileNumber) - num(b.fileNumber));
-        if (ok.length < l.qty) throw new HttpError(409, ok.length ? `المتوفر من ${nm} لمدة ${monthsTxt(months)} هو ${ok.length} بس.` : `${nm} لمدة ${monthsTxt(months)} نفد من المخزون.`, { code: 'stock' });
+        if (ok.length < l.qty) throw new HttpError(409, ok.length ? `المتوفر من ${nm} (${opt}) هو ${ok.length} بس.` : `${nm} (${opt}) نفد من المخزون.`, { code: 'stock' });
         ok.slice(0, l.qty).forEach(f => { reserved.push({ c: 'files', id: f.id, line: lineIdx }); mark(it.id, 'files', f.id); });
-        extra = { months, src: { productIds: pids } };
+        const days = byDate ? Math.max(1, Math.round((until - now) / DAY)) : months * 30;
+        extra = byDate ? { until, days, src: { productIds: pids } } : { months, days, src: { productIds: pids } };
       } else if (it.type === 'number') {
         if (it.mode === 'pick') {
           if (!l.numberId) throw new HttpError(400, 'اختار الرقم.');
@@ -527,7 +535,9 @@ async function createOrder(req, env, fs, slug, ectx) {
         unit = round2(pk.price); opt = clean(pk.label, 60);
         extra = { input: input.filter(x => x.value) };
       } else throw new HttpError(409, 'منتج غير متاح.', { code: 'stale' });
-      const wd = itemWarranty(it) ?? warrantyDays(platform);
+      let wd = itemWarranty(it) ?? warrantyDays(platform);
+      // مدة 7 أيام أو أقل: ملفي ما تضمنش، وضمان التاجر ما يفوتش مدة الاشتراك
+      if (extra.days) wd = extra.days <= 7 ? 0 : Math.min(wd, extra.days);
       outLines.push({ itemId: it.id, type: it.type, name: nm, opt, qty: l.qty, unit, total: round2(unit * l.qty), status: 'pending', wd, ...extra });
     }
     const subtotal = round2(outLines.reduce((a, x) => a + x.total, 0));
@@ -709,7 +719,7 @@ async function confirmOrder(fs, id, by, env, ctx) {
         if (r.c === 'codes' && line.src?.productId) alt = (await fs.query('codes', [['productId', '==', line.src.productId], ['status', '==', 'available']], { parent: `merchants/${sid}`, limit: 5, tx })).find(x => !used.has('codes/' + x.id));
         else if (r.c === 'numbers' && line.src?.country && !line.numberId) alt = (await fs.query('numbers', [['country', '==', line.src.country], ['status', '==', 'available']], { parent: `merchants/${sid}`, limit: 5, tx })).find(x => !used.has('numbers/' + x.id));
         else if (r.c === 'files' && line.src?.productIds?.length) {
-          const need = addMonths(now, line.months || 1) - DAY;
+          const need = line.until ? line.until : now + (line.months || 1) * SUB_MONTH - DAY;
           alt = (await fs.query('files', [['productId', 'in', line.src.productIds.slice(0, 10)], ['status', '==', 'available']], { parent: `merchants/${sid}`, limit: 20, tx }))
             .find(x => !used.has('files/' + x.id) && prod[x.productId]?.type === 'account' && num(prod[x.productId].accountEnd) >= need);
         }
@@ -733,10 +743,11 @@ async function confirmOrder(fs, id, by, env, ctx) {
           sec.push({ l: line.qty > 1 ? `الرقم ${sec.length + 1}` : 'الرقم', v: String(d.number || '') });
         } else if (c === 'files') {
           const p = prod[d.productId];
-          const end = Math.min(addMonths(now, line.months || 1), num(p?.accountEnd) || addMonths(now, line.months || 1));
+          const want = line.until ? line.until : now + (line.months || 1) * SUB_MONTH;
+          const end = Math.min(want, num(p?.accountEnd) || want);
           const cost = p ? accCost(p, now, end) : 0;
           W.push(fs.wUpdate(`merchants/${sid}/files/${d.id}`, { status: 'sold', ...cust, saleId, startDate: now, endDate: end, reservedBy: null, reservedAt: null }));
-          W.push(fs.wCreate(`merchants/${sid}/sales/${saleId}`, { ...sale, type: 'account', productId: d.productId, productName: p?.name || line.name, itemId: d.id, itemLabel: `الملف #${d.fileNumber}`, cost, profit: round2(line.unit - cost), months: line.months || 1, startDate: now, endDate: end, status: 'active' }));
+          W.push(fs.wCreate(`merchants/${sid}/sales/${saleId}`, { ...sale, type: 'account', productId: d.productId, productName: p?.name || line.name, itemId: d.id, itemLabel: `الملف #${d.fileNumber}`, cost, profit: round2(line.unit - cost), months: line.months || Math.max(1, Math.round((line.days || 30) / 30)), startDate: now, endDate: end, status: 'active' }));
           const pre = got.length > 1 ? ` ${sec.length / 4 + 1}` : '';
           sec.push({ l: 'الإيميل' + pre, v: String(p?.email || '') }, { l: 'كلمة المرور' + pre, v: String(p?.password || '') }, { l: 'رقم الملف' + pre, v: `#${d.fileNumber}` }, { l: 'ينتهي في' + pre, v: fmtDate(end) });
         }
@@ -1184,8 +1195,9 @@ function cleanItem(x, cats) {
   if (type === 'account') {
     it.productIds = (Array.isArray(x.productIds) ? x.productIds : []).map(String).filter(p => ID_RE.test(p)).slice(0, 10);
     it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 8);
+    it.untils = (Array.isArray(x.untils) ? x.untils : []).map(u => ({ d: int(u?.d), price: posNum(u?.price) })).filter(u => u.d > Date.now() - DAY && u.d < Date.now() + 400 * DAY && u.price > 0).slice(0, 6);
     if (!it.productIds.length) throw new HttpError(400, 'اختار حساب واحد على الأقل.');
-    if (!it.durations.length) throw new HttpError(400, 'حط سعر لمدة وحدة على الأقل.');
+    if (!it.durations.length && !it.untils.length) throw new HttpError(400, 'حط سعر لمدة وحدة على الأقل، أو تاريخ انتهاء بسعره.');
   } else if (type === 'code') {
     it.productId = String(x.productId || ''); it.price = posNum(x.price); it.maxQty = Math.min(10, Math.max(1, int(x.maxQty) || 10));
     if (!ID_RE.test(it.productId)) throw new HttpError(400, 'اختار فئة الأكواد.');
@@ -1203,7 +1215,10 @@ function cleanItem(x, cats) {
 }
 function cleanStock(x, type) {
   const o = { stock: Math.max(0, Math.min(100000, int(x.stock))) };
-  if (type === 'account') o.maxMonths = Math.max(0, Math.min(24, int(x.maxMonths)));
+  if (type === 'account') {
+    o.maxMonths = Math.max(0, Math.min(24, int(x.maxMonths)));
+    o.untilN = (Array.isArray(x.untilN) ? x.untilN : []).map(u => ({ d: int(u?.d), n: Math.max(0, int(u?.n)) })).filter(u => u.d > 0).slice(0, 6);
+  }
   if (type === 'number') {
     o.countries = (Array.isArray(x.countries) ? x.countries : []).map(c => ({ country: clean(c?.country, 40), n: Math.max(0, int(c?.n)) })).filter(c => c.country).slice(0, 100);
     o.numbers = (Array.isArray(x.numbers) ? x.numbers : []).filter(n => ID_RE.test(String(n?.id || ''))).map(n => ({ id: String(n.id), mask: clean(n.mask, 40), country: clean(n.country, 40), price: posNum(n.price) })).filter(n => n.price).slice(0, 80);

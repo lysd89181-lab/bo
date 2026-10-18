@@ -1,7 +1,7 @@
 // ملفي — لوحة التاجر
 import {
   db, $, $$, esc, money, num, setCurrency, fmtDate, toInput, fromInput, startOfDay, addMonths, daysLeft,
-  monthsCeil, tsMs, ago, leftText, DAY, normPhone, waLink, fill, copyText, icon, RIDGE, toast, modal,
+  monthsCeil, addSubMonths, subMonthsCeil, SUB_MONTH, tsMs, ago, leftText, DAY, normPhone, waLink, fill, copyText, icon, RIDGE, toast, modal,
   confirmBox, busy, empty, skeleton, fmtShort, requireUser, shell, animate, safeImg, compressImage, isEN, t, moneyIn, planPrices, CURS, monthsTxt, bannerHref, auth, sendEmailVerification, apiPost, pushCardHTML, pushAction, startPush,
   collection, doc, onSnapshot, query, where, writeBatch, setDoc, updateDoc, deleteDoc, addDoc, serverTimestamp
 } from './core.js';
@@ -783,30 +783,34 @@ function sellAccount({ file, product }) {
   const f = file || filesOf(p.id).find(x => x.status === 'available');
   if (!f) { toast('ما فيش ملفات متاحة في هذا الحساب', 'bad'); return; }
   const today = startOfDay();
-  const maxM = Math.max(1, Math.min(24, monthsCeil(Math.max(today, p.accountStart), p.accountEnd)));
+  const maxM = Math.max(1, Math.min(24, subMonthsCeil(Math.max(today, p.accountStart), p.accountEnd)));
   const m = modal(`بيع ${esc(p.name)}، الملف #${f.fileNumber}`, `
     ${custFields()}
     <div class="grid2 keep">
-      <div class="field"><label>المدة</label><select id="sM">${monthOpts(maxM)}</select></div>
+      <div class="field"><label>المدة</label><select id="sM">${monthOpts(maxM)}<option value="d">${t('لين تاريخ معين')}</option></select></div>
       <div class="field"><label>السعر</label><input id="sPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div></div>
-    <div class="field"><label>تاريخ البداية</label><input id="sStart" type="date" value="${toInput(Math.max(today, p.accountStart))}"></div>
+    <div class="grid2 keep"><div class="field"><label>تاريخ البداية</label><input id="sStart" type="date" value="${toInput(Math.max(today, p.accountStart))}"></div>
+      <div class="field" id="sUntilF" hidden><label>${t('ينتهي في')}</label><input id="sUntil" type="date" value="${toInput(p.accountEnd)}" max="${toInput(p.accountEnd)}"></div></div>
     <div class="summary" id="sSum"></div>
     <div class="mfoot"><button class="btn amber" id="sGo">${icon('check')} تأكيد البيع</button></div>`);
   bindCust(m.el);
   const price = $('#sPrice', m.el);
   const calc = () => {
-    const start = fromInput($('#sStart', m.el).value) || today, mm = +$('#sM', m.el).value;
-    const end = Math.min(addMonths(start, mm), p.accountEnd), cost = accCost(p, start, end);
-    $('#sSum', m.el).innerHTML = `<div><span>ينتهي في</span><b>${fmtDate(end)}${end === p.accountEnd ? ' (نهاية الحساب)' : ''}</b></div><div><span>تكلفة الملف للمدة</span><b>${money(cost)}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
-    return { start, mm, end, cost };
+    const start = fromInput($('#sStart', m.el).value) || today, byDate = $('#sM', m.el).value === 'd';
+    const end = byDate ? Math.min(fromInput($('#sUntil', m.el).value) || p.accountEnd, p.accountEnd) : Math.min(addSubMonths(start, +$('#sM', m.el).value), p.accountEnd);
+    const days = Math.max(1, Math.round((end - start) / DAY)), mm = byDate ? Math.max(1, Math.round(days / 30)) : +$('#sM', m.el).value, cost = accCost(p, start, end);
+    if (!price.dataset.touched) price.value = round2(num(p.fileSellPrice) / 30 * days);
+    $('#sSum', m.el).innerHTML = `<div><span>ينتهي في</span><b>${fmtDate(end)} · ${days} ${t('يوم')}${end === p.accountEnd ? ' (نهاية الحساب)' : ''}</b></div><div><span>تكلفة الملف للمدة</span><b>${money(cost)}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
+    return { start, mm, end, cost, days };
   };
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
-  $('#sM', m.el).onchange = () => { if (!price.dataset.touched) price.value = round2(num(p.fileSellPrice) * +$('#sM', m.el).value); calc(); };
-  $('#sStart', m.el).onchange = calc;
+  $('#sM', m.el).onchange = () => { $('#sUntilF', m.el).hidden = $('#sM', m.el).value !== 'd'; calc(); };
+  $('#sStart', m.el).onchange = calc; $('#sUntil', m.el).onchange = calc;
   calc();
   $('#sGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const { start, mm, end, cost } = calc();
     if (start >= p.accountEnd) throw new Error('تاريخ البداية بعد نهاية الحساب.');
+    if (end <= start) throw new Error(t('تاريخ الانتهاء لازم يكون بعد تاريخ البداية.'));
     const cur = S.files.find(x => x.id === f.id);
     if (!cur || cur.status !== 'available') throw new Error('الملف هذا تباع من قبل.');
     const b = writeBatch(db), c = resolveCust(m.el, b), pr = num(price.value), sref = doc(mcol('sales'));
@@ -885,24 +889,30 @@ function renew(f) {
   if (accDead(p)) { toast('الحساب نفسه منتهي', 'bad'); return; }
   const start = f.endDate;
   if (start >= p.accountEnd) { toast('الحساب ينتهي مع اشتراك الزبون، ما فيش مدة للتجديد. سجّل "لم يجدد".', 'bad'); return; }
-  const maxM = Math.max(1, Math.min(24, monthsCeil(start, p.accountEnd)));
+  const maxM = Math.max(1, Math.min(24, subMonthsCeil(start, p.accountEnd)));
   const m = modal(`تجديد ${esc(f.customerName)}`, `
     <div class="summary"><div><span>الحساب</span><b>${esc(p.name)}، الملف #${f.fileNumber}</b></div><div><span>انتهى/ينتهي في</span><b>${fmtDate(f.endDate)}</b></div></div>
-    <div class="grid2 keep"><div class="field"><label>مدة التجديد</label><select id="rM">${monthOpts(maxM)}</select></div>
+    <div class="grid2 keep"><div class="field"><label>مدة التجديد</label><select id="rM">${monthOpts(maxM)}<option value="d">${t('لين تاريخ معين')}</option></select></div>
       <div class="field"><label>السعر</label><input id="rPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div></div>
+    <div class="field" id="rUntilF" hidden><label>${t('ينتهي في')}</label><input id="rUntil" type="date" value="${toInput(p.accountEnd)}" max="${toInput(p.accountEnd)}"></div>
     <div class="summary" id="rSum"></div>
     <div class="mfoot"><button class="btn teal" id="rGo">${icon('refresh')} تأكيد التجديد</button></div>`);
   const price = $('#rPrice', m.el);
   const calc = () => {
-    const mm = +$('#rM', m.el).value, end = Math.min(addMonths(start, mm), p.accountEnd), cost = accCost(p, start, end);
-    $('#rSum', m.el).innerHTML = `<div><span>ينتهي الجديد في</span><b>${fmtDate(end)}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
+    const byDate = $('#rM', m.el).value === 'd';
+    const end = byDate ? Math.min(fromInput($('#rUntil', m.el).value) || p.accountEnd, p.accountEnd) : Math.min(addSubMonths(start, +$('#rM', m.el).value), p.accountEnd);
+    const days = Math.max(1, Math.round((end - start) / DAY)), mm = byDate ? Math.max(1, Math.round(days / 30)) : +$('#rM', m.el).value, cost = accCost(p, start, end);
+    if (!price.dataset.touched) price.value = round2(num(p.fileSellPrice) / 30 * days);
+    $('#rSum', m.el).innerHTML = `<div><span>ينتهي الجديد في</span><b>${fmtDate(end)} · ${days} ${t('يوم')}</b></div><div><span>الربح</span><b class="t-ok">${money(num(price.value) - cost)}</b></div>`;
     return { mm, end, cost };
   };
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
-  $('#rM', m.el).onchange = () => { if (!price.dataset.touched) price.value = round2(num(p.fileSellPrice) * +$('#rM', m.el).value); calc(); };
+  $('#rM', m.el).onchange = () => { $('#rUntilF', m.el).hidden = $('#rM', m.el).value !== 'd'; calc(); };
+  $('#rUntil', m.el).onchange = calc;
   calc();
   $('#rGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const { mm, end, cost } = calc(), pr = num(price.value);
+    if (end <= start) throw new Error(t('تاريخ الانتهاء لازم يكون بعد تاريخ البداية.'));
     const b = writeBatch(db), sref = doc(mcol('sales'));
     b.set(sref, { type: 'account', productId: p.id, productName: p.name, itemId: f.id, itemLabel: `الملف #${f.fileNumber}`, customerId: f.customerId || null, customerName: f.customerName, customerPhone: f.customerPhone || '', price: pr, cost, profit: round2(pr - cost), months: mm, startDate: start, endDate: end, date: Date.now(), status: 'active', isRenewal: true });
     if (f.saleId && S.sales.find(s => s.id === f.saleId)) b.update(mdoc('sales', f.saleId), { status: 'renewed' });
@@ -960,7 +970,7 @@ function productForm(type, existing) {
   if (type === 'number') return numberForm(existing);
   const ed = !!existing, p = existing || {};
   if (type === 'account') {
-    const st = p.accountStart || startOfDay(), en = p.accountEnd || addMonths(startOfDay(), 1);
+    const st = p.accountStart || startOfDay(), en = p.accountEnd || addSubMonths(startOfDay(), 1);
     const m = modal(ed ? 'تعديل الحساب' : 'إضافة حساب جديد', `
       <div class="field"><label>اسم المنتج</label><input id="aName" list="svcDL" value="${esc(p.name || '')}" placeholder="Netflix"><datalist id="svcDL">${SERVICES.map(s => `<option value="${s}">`).join('')}</datalist></div>
       <div class="field"><label>إيميل الحساب</label><input id="aEmail" dir="ltr" value="${esc(p.email || '')}" placeholder="example@email.com"></div>
@@ -975,7 +985,7 @@ function productForm(type, existing) {
       <div class="field"><label>ملاحظات</label><input id="aNotes" value="${esc(p.notes || '')}"></div>
       ${ed ? '<p class="hint" style="margin-bottom:12px">تقدر تزيد عدد الملفات، لكن ما تقدرش تنقصه.</p>' : ''}
       <div class="mfoot"><button class="btn amber" id="aGo">${icon('check')} ${ed ? 'حفظ التعديل' : 'حفظ'}</button></div>`);
-    $$('[data-mm]', m.el).forEach(b => b.onclick = () => { $('#aEnd', m.el).value = toInput(addMonths(fromInput($('#aStart', m.el).value) || startOfDay(), +b.dataset.mm)); });
+    $$('[data-mm]', m.el).forEach(b => b.onclick = () => { $('#aEnd', m.el).value = toInput(addSubMonths(fromInput($('#aStart', m.el).value) || startOfDay(), +b.dataset.mm)); });
     $('#aGo', m.el).onclick = e => busy(e.currentTarget, async () => {
       const d = {
         type: 'account', name: $('#aName', m.el).value.trim(), email: $('#aEmail', m.el).value.trim(), password: $('#aPass', m.el).value,
