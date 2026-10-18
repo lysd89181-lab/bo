@@ -328,7 +328,7 @@ async function methodsFor(fs, store, platform) {
 function pubItem(it) {
   const o = { id: it.id, type: it.type, name: clean(it.name, 80), desc: clean(it.desc, 800), cat: clean(it.cat, 30), featured: it.featured === true, order: num(it.order), note: clean(it.note, 300), img: it.imgV ? `/img/i/${it.id}?v=${int(it.imgV)}` : '', wd: itemWarranty(it) };
   if (it.type === 'account') {
-    o.durations = (Array.isArray(it.durations) ? it.durations : []).map(d => ({ m: int(d?.m), price: round2(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).sort((a, b) => a.m - b.m).slice(0, 8);
+    o.durations = (Array.isArray(it.durations) ? it.durations : []).map(d => ({ m: int(d?.m), price: round2(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).sort((a, b) => a.m - b.m).slice(0, 24);
     o.stock = Math.max(0, int(it.stock)); o.maxMonths = Math.max(0, int(it.maxMonths));
     const un = new Map((Array.isArray(it.untilN) ? it.untilN : []).map(u => [int(u?.d), Math.max(0, int(u?.n))]));
     o.untils = (Array.isArray(it.untils) ? it.untils : []).map(u => ({ d: int(u?.d), price: round2(u?.price) })).filter(u => u.price > 0 && u.d > Date.now() + 12 * 3600e3).sort((a, b) => a.d - b.d).slice(0, 6).map(u => ({ ...u, n: un.get(u.d) || 0 }));
@@ -1194,7 +1194,7 @@ function cleanItem(x, cats) {
   it.warranty = Math.min(365, int(x.warranty));
   if (type === 'account') {
     it.productIds = (Array.isArray(x.productIds) ? x.productIds : []).map(String).filter(p => ID_RE.test(p)).slice(0, 10);
-    it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 8);
+    it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 24);
     it.untils = (Array.isArray(x.untils) ? x.untils : []).map(u => ({ d: int(u?.d), price: posNum(u?.price) })).filter(u => u.d > Date.now() - DAY && u.d < Date.now() + 400 * DAY && u.price > 0).slice(0, 6);
     if (!it.productIds.length) throw new HttpError(400, 'اختار حساب واحد على الأقل.');
     if (!it.durations.length && !it.untils.length) throw new HttpError(400, 'حط سعر لمدة وحدة على الأقل، أو تاريخ انتهاء بسعره.');

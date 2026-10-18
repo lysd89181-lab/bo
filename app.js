@@ -71,6 +71,24 @@ function accCost(p, start, end) {
   const used = Math.max(0, Math.min(end, p.accountEnd) - Math.max(start, p.accountStart));
   return round2((num(p.purchasePrice) / (p.totalFiles || 1)) * (used / total));
 }
+// اختيار المدة بأزرار: من شهر لـ12، «التالي» من 13 لـ24، و«مدة معينة» تفتح التقويم
+function durPick(id, max) {
+  const chip = m => `<button type="button" class="chip ${m === 1 ? 'on' : ''}" data-pk="${m}">${t(monthsTxt(m))}</button>`;
+  const p1 = Array.from({ length: Math.min(12, max) }, (_, i) => i + 1), p2 = Array.from({ length: Math.max(0, Math.min(24, max) - 12) }, (_, i) => i + 13);
+  return `<div class="field durpick" data-for="${id}"><label>${t('المدة')}</label><select id="${id}" hidden>${monthOpts(max)}<option value="d">d</option></select>
+    <div class="chips" data-pp="1">${p1.map(chip).join('')}</div>${p2.length ? `<div class="chips" data-pp="2" hidden style="margin-top:6px">${p2.map(chip).join('')}</div>` : ''}
+    <div class="chips" style="margin-top:8px">${p2.length ? `<button type="button" class="chip" data-ppage>${t('التالي')} ›</button>` : ''}<button type="button" class="chip" data-pk="d">${icon('calendar')} ${t('مدة معينة')}</button></div></div>`;
+}
+function bindDurPick(root, id, dateInput) {
+  const box = $(`.durpick[data-for="${id}"]`, root), sel = $('#' + id, root);
+  $$('[data-pk]', box).forEach(b => b.onclick = () => {
+    $$('[data-pk]', box).forEach(x => x.classList.toggle('on', x === b));
+    sel.value = b.dataset.pk; sel.dispatchEvent(new Event('change'));
+    if (b.dataset.pk === 'd' && dateInput) setTimeout(() => { const i = $(dateInput, root); try { i.showPicker(); } catch { i.focus(); } }, 50);
+  });
+  const pg = $('[data-ppage]', box);
+  if (pg) pg.onclick = () => { const a = $('[data-pp="1"]', box), b = $('[data-pp="2"]', box), two = b.hidden; b.hidden = !two; a.hidden = two; pg.textContent = two ? '‹ ' + t('من شهر لـ12') : t('التالي') + ' ›'; };
+}
 const monthOpts = (max, sel = 1) => Array.from({ length: max }, (_, i) => i + 1).map(m => `<option value="${m}" ${m === sel ? 'selected' : ''}>${monthsTxt(m)}</option>`).join('');
 function saleBadge(s) {
   if (s.type !== 'account') return '<span class="badge info">مسلّم</span>';
@@ -786,11 +804,10 @@ function sellAccount({ file, product }) {
   const maxM = Math.max(1, Math.min(24, subMonthsCeil(Math.max(today, p.accountStart), p.accountEnd)));
   const m = modal(`بيع ${esc(p.name)}، الملف #${f.fileNumber}`, `
     ${custFields()}
-    <div class="grid2 keep">
-      <div class="field"><label>المدة</label><select id="sM">${monthOpts(maxM)}<option value="d">${t('لين تاريخ معين')}</option></select></div>
-      <div class="field"><label>السعر</label><input id="sPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div></div>
+    ${durPick('sM', maxM)}
     <div class="grid2 keep"><div class="field"><label>تاريخ البداية</label><input id="sStart" type="date" value="${toInput(Math.max(today, p.accountStart))}"></div>
       <div class="field" id="sUntilF" hidden><label>${t('ينتهي في')}</label><input id="sUntil" type="date" value="${toInput(p.accountEnd)}" max="${toInput(p.accountEnd)}"></div></div>
+    <div class="field"><label>السعر</label><input id="sPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div>
     <div class="summary" id="sSum"></div>
     <div class="mfoot"><button class="btn amber" id="sGo">${icon('check')} تأكيد البيع</button></div>`);
   bindCust(m.el);
@@ -806,6 +823,7 @@ function sellAccount({ file, product }) {
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
   $('#sM', m.el).onchange = () => { $('#sUntilF', m.el).hidden = $('#sM', m.el).value !== 'd'; calc(); };
   $('#sStart', m.el).onchange = calc; $('#sUntil', m.el).onchange = calc;
+  bindDurPick(m.el, 'sM', '#sUntil');
   calc();
   $('#sGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const { start, mm, end, cost } = calc();
@@ -892,9 +910,9 @@ function renew(f) {
   const maxM = Math.max(1, Math.min(24, subMonthsCeil(start, p.accountEnd)));
   const m = modal(`تجديد ${esc(f.customerName)}`, `
     <div class="summary"><div><span>الحساب</span><b>${esc(p.name)}، الملف #${f.fileNumber}</b></div><div><span>انتهى/ينتهي في</span><b>${fmtDate(f.endDate)}</b></div></div>
-    <div class="grid2 keep"><div class="field"><label>مدة التجديد</label><select id="rM">${monthOpts(maxM)}<option value="d">${t('لين تاريخ معين')}</option></select></div>
-      <div class="field"><label>السعر</label><input id="rPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div></div>
+    ${durPick('rM', maxM)}
     <div class="field" id="rUntilF" hidden><label>${t('ينتهي في')}</label><input id="rUntil" type="date" value="${toInput(p.accountEnd)}" max="${toInput(p.accountEnd)}"></div>
+    <div class="field"><label>السعر</label><input id="rPrice" inputmode="decimal" dir="ltr" value="${num(p.fileSellPrice)}"></div>
     <div class="summary" id="rSum"></div>
     <div class="mfoot"><button class="btn teal" id="rGo">${icon('refresh')} تأكيد التجديد</button></div>`);
   const price = $('#rPrice', m.el);
@@ -909,6 +927,7 @@ function renew(f) {
   price.addEventListener('input', () => { price.dataset.touched = 1; calc(); });
   $('#rM', m.el).onchange = () => { $('#rUntilF', m.el).hidden = $('#rM', m.el).value !== 'd'; calc(); };
   $('#rUntil', m.el).onchange = calc;
+  bindDurPick(m.el, 'rM', '#rUntil');
   calc();
   $('#rGo', m.el).onclick = e => busy(e.currentTarget, async () => {
     const { mm, end, cost } = calc(), pr = num(price.value);

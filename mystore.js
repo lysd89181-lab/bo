@@ -343,18 +343,16 @@ function itemForm(it) {
   const accs = S.products.filter(p => p.type === 'account');
   const codes = S.products.filter(p => p.type === 'code');
   const countries = [...new Set(S.numbers.map(n => n.country).filter(Boolean))];
-  const durs = [1, 2, 3, 6, 12];
   let body = '';
   if (type === 'account') {
     const names = [...new Set(accs.map(p => p.name))];
     body = accs.length ? `<label class="small muted" style="display:block;margin-bottom:8px">${t('الحسابات اللي يتسلّم منها (يختار النظام ملف متاح تلقائياً)')}</label>
       <div class="chips" style="margin-bottom:14px">${names.map(n => `<button type="button" class="chip ${(it.productIds || []).some(id => accs.find(p => p.id === id)?.name === n) ? 'on' : ''}" data-accname="${esc(n)}"><span data-raw>${esc(n)}</span>&nbsp;<span class="dim">${accs.filter(p => p.name === n).length}</span></button>`).join('')}</div>
-      <label class="small muted" style="display:block;margin-bottom:8px">${t('المدد والأسعار (فاضي = ما تظهرش)')}</label>
-      <div class="grid3 keep">${durs.map(d => `<div class="field"><label>${t(monthsTxt(d))} <span class="dim">(${d * 30} ${t('يوم')})</span></label><input data-dur="${d}" inputmode="decimal" dir="ltr" value="${(it.durations || []).find(x => x.m === d)?.price ?? ''}"></div>`).join('')}</div>
-      <label class="small muted" style="display:block;margin:4px 0 8px">${t('لين تاريخ معين (للحسابات اللي باقيلها أقل من شهر مثلاً)')}</label>
+      <label class="small muted" style="display:block;margin-bottom:8px">${t('المدد: اضغط على المدة اللي تبيها وحط سعرها')}</label>
+      ${monthChips((it.durations || []).map(d => d.m), true)}
+      <div id="ifDurRows" style="margin-top:10px">${(it.durations || []).slice().sort((a, b) => a.m - b.m).map(durRow).join('')}</div>
       <div id="ifUntils">${(it.untils || []).filter(u => u.d > Date.now()).map(untilRow).join('')}</div>
-      <button type="button" class="btn ghost sm" id="ifAddUntil" style="margin-bottom:6px">${icon('plus')} ${t('تاريخ')}</button>
-      <p class="hint" style="margin-bottom:14px">${t('الزبون يشوف «لين التاريخ» بالسعر اللي تحطه، وينباع من الحسابات اللي ما تنتهيش قبله. المدد 7 أيام أو أقل ملفي ما تضمنهاش.')}</p>`
+      <p class="hint" style="margin:6px 0 14px">${t('الشهر = 30 يوم. «مدة معينة» للحسابات اللي باقيلها أقل من شهر: تختار تاريخ النهاية من التقويم وتحط سعره، والزبون يشوف «لين التاريخ». المدد 7 أيام أو أقل ملفي ما تضمنهاش.')}</p>`
       : `<p class="t-bad" style="margin-bottom:14px">${t('ما عندكش حسابات. أضف حساب من صفحة المنتجات أولاً.')}</p>`;
   } else if (type === 'code') {
     body = codes.length ? `<div class="field"><label>${t('فئة الأكواد')}</label><select id="ifProd">${codes.map(p => `<option value="${esc(p.id)}" ${it.productId === p.id ? 'selected' : ''} data-raw>${esc(p.name)} (${S.codes.filter(c => c.productId === p.id && c.status === 'available').length})</option>`).join('')}</select></div>
@@ -404,7 +402,24 @@ function itemForm(it) {
   $$('[data-accname]', el).forEach(b => b.onclick = () => b.classList.toggle('on'));
   let mode = it.mode || 'country';
   $$('[data-mode]', el).forEach(b => b.onclick = () => { mode = b.dataset.mode; $$('[data-mode]', el).forEach(x => x.classList.toggle('on', x === b)); $('#ifCtry', el).hidden = mode === 'pick'; $('#ifPickHint', el).hidden = mode !== 'pick'; });
-  const au = $('#ifAddUntil', el); if (au) au.onclick = () => { if ($$('.untilrow', el).length < 6) $('#ifUntils', el).insertAdjacentHTML('beforeend', untilRow({})); };
+  const openCal = i => { try { i.showPicker(); } catch { i.focus(); } };
+  if (type === 'account') bindMonthChips(el, {
+    onToggle: (m, b) => {
+      const row = $(`.durrow[data-m="${m}"]`, el);
+      if (row) { row.remove(); b.classList.remove('on'); return; }
+      b.classList.add('on');
+      const rows = $$('.durrow', el), after = rows.filter(r => +r.dataset.m < m).pop();
+      const html = durRow({ m });
+      if (after) after.insertAdjacentHTML('afterend', html); else $('#ifDurRows', el).insertAdjacentHTML('afterbegin', html);
+      setTimeout(() => $(`.durrow[data-m="${m}"] [data-dp]`, el)?.focus(), 30);
+    },
+    onCustom: () => {
+      if ($$('.untilrow', el).length >= 6) { toast(t('أقصى حد 6 تواريخ.'), 'bad'); return; }
+      $('#ifUntils', el).insertAdjacentHTML('beforeend', untilRow({}));
+      const inp = $$('.untilrow [data-ud]', el).pop(); setTimeout(() => openCal(inp), 30);
+    }
+  });
+  el.addEventListener('click', e => { const r = e.target.closest('[data-rmdur]'); if (r) { const row = r.closest('.durrow'); $(`[data-mc="${row.dataset.m}"]`, el)?.classList.remove('on'); row.remove(); } });
   const ap = $('#ifAddPack', el); if (ap) ap.onclick = () => { if ($$('.packrow', el).length < 20) $('#ifPacks', el).insertAdjacentHTML('beforeend', packRow({})); };
   const af = $('#ifAddField', el); if (af) af.onclick = () => { if ($$('.fieldrow', el).length < 4) $('#ifFields', el).insertAdjacentHTML('beforeend', fieldRow({})); };
   el.addEventListener('click', e => { const d = e.target.closest('[data-rm]'); if (d) d.closest('.frow').remove(); });
@@ -421,7 +436,8 @@ function itemForm(it) {
     if (type === 'account') {
       const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
       d.productIds = accs.filter(p => names.includes(p.name)).map(p => p.id).slice(0, 10);
-      d.durations = durs.map(m => ({ m, price: round2(num($(`[data-dur="${m}"]`, el)?.value)) })).filter(x => x.price > 0);
+      if ($$('.durrow', el).some(r => !(num($('[data-dp]', r).value) > 0))) throw new Error(t('حط سعر لكل مدة اخترتها، أو شيلها.'));
+      d.durations = $$('.durrow', el).map(r => ({ m: +r.dataset.m, price: round2(num($('[data-dp]', r).value)) })).filter(x => x.price > 0);
       d.untils = $$('.untilrow', el).map(r => ({ d: fromInput($('[data-ud]', r).value), price: round2(num($('[data-up]', r).value)) })).filter(u => u.d && u.price > 0);
       if ($$('.untilrow', el).some(r => ($('[data-ud]', r).value && !(num($('[data-up]', r).value) > 0)) || (!$('[data-ud]', r).value && num($('[data-up]', r).value) > 0))) throw new Error(t('كل تاريخ لازم يكون معاه سعر.'));
       if (d.untils.some(u => u.d <= Date.now())) throw new Error(t('التاريخ لازم يكون بعد اليوم.'));
@@ -446,6 +462,21 @@ function itemForm(it) {
     m.close(); toast(t('تم الحفظ'));
   });
 }
+// أزرار المدد: من شهر لـ12، و«التالي» يكمل من 13 لـ24، و«مدة معينة» تفتح التقويم
+function monthChips(on = [], custom = true, max = 24) {
+  const chip = m => `<button type="button" class="chip ${on.includes(m) ? 'on' : ''}" data-mc="${m}">${t(monthsTxt(m))}</button>`;
+  const p1 = Array.from({ length: Math.min(12, max) }, (_, i) => i + 1), p2 = Array.from({ length: Math.max(0, Math.min(24, max) - 12) }, (_, i) => i + 13);
+  const second = on.some(m => m > 12);
+  return `<div class="mchips"><div class="chips" data-mp="1" ${second ? 'hidden' : ''}>${p1.map(chip).join('')}</div>${p2.length ? `<div class="chips" data-mp="2" ${second ? '' : 'hidden'}>${p2.map(chip).join('')}</div>` : ''}
+    <div class="chips" style="margin-top:8px">${p2.length ? `<button type="button" class="chip" data-mpage>${second ? '‹ ' + t('من شهر لـ12') : t('التالي') + ' ›'}</button>` : ''}${custom ? `<button type="button" class="chip" data-mcustom>${icon('calendar')} ${t('مدة معينة')}</button>` : ''}</div></div>`;
+}
+function bindMonthChips(root, { onToggle, onCustom }) {
+  $$('[data-mc]', root).forEach(b => b.onclick = () => onToggle(+b.dataset.mc, b));
+  const pg = $('[data-mpage]', root);
+  if (pg) pg.onclick = () => { const p2 = $('[data-mp="2"]', root), p1 = $('[data-mp="1"]', root); const show2 = p2.hidden; p2.hidden = !show2; p1.hidden = show2; pg.textContent = show2 ? '‹ ' + t('من شهر لـ12') : t('التالي') + ' ›'; };
+  const cu = $('[data-mcustom]', root); if (cu && onCustom) cu.onclick = () => onCustom(cu);
+}
+const durRow = d => `<div class="frow durrow" data-m="${d.m}"><span class="dlbl"><b>${t(monthsTxt(d.m))}</b><small class="dim">${d.m * 30} ${t('يوم')}</small></span><input class="inp" data-dp inputmode="decimal" dir="ltr" placeholder="${t('السعر')}" value="${d.price ?? ''}"><button type="button" class="iconbtn sm" data-rmdur aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 const untilRow = u => `<div class="frow untilrow"><input class="inp" type="date" data-ud value="${u.d ? toInput(u.d) : ''}" min="${toInput(Date.now() + DAY)}"><input class="inp" data-up inputmode="decimal" dir="ltr" placeholder="${t('السعر')}" value="${u.price ?? ''}"><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 const packRow = p => `<div class="frow packrow"><input class="inp" data-pl maxlength="60" placeholder="${t('مثلاً: 60 شدة')}" value="${esc(p.label || '')}"><input class="inp" data-pp inputmode="decimal" dir="ltr" placeholder="${t('السعر')}" value="${p.price ?? ''}"><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
 const fieldRow = f => `<div class="frow fieldrow"><input class="inp" data-fl maxlength="40" placeholder="${t('اسم الحقل')}" value="${esc(f.label || '')}"><label class="row small" style="gap:6px"><input type="checkbox" data-fr ${f.req !== false ? 'checked' : ''}>${t('إجباري')}</label><button type="button" class="iconbtn sm" data-rm aria-label="${t('حذف')}">${icon('x')}</button></div>`;
