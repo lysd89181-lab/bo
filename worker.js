@@ -12,7 +12,7 @@ const OPEN = ['awaiting', 'preparing', 'delivered', 'problem'];
 const CUR_SYM = { LYD: 'د.ل', SAR: 'ر.س', USDT: 'USDT' };
 const ASSETS = { '/store.js': 'text/javascript; charset=utf-8', '/store.css': 'text/css; charset=utf-8', '/store-theme.js': 'text/javascript; charset=utf-8' };
 const STORE_FIELDS = ['ownerId', 'slug', 'name', 'country', 'currency', 'status', 'suspended', 'design', 'sections', 'info', 'categories', 'logoV', 'coverV', 'launchedAt', 'updatedAt', 'payMethods'];
-const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt', 'warranty', 'untils', 'untilN'];
+const ITEM_FIELDS = ['type', 'name', 'desc', 'cat', 'active', 'featured', 'order', 'imgV', 'note', 'productIds', 'durations', 'productId', 'price', 'maxQty', 'mode', 'prices', 'packs', 'fields', 'stock', 'maxMonths', 'countries', 'numbers', 'updatedAt', 'warranty', 'untils', 'untilN', 'monthPrice', 'durMonths'];
 const USER_FIELDS = ['isActive', 'planExpiresAt', 'plan', 'status', 'storeAccess', 'role', 'displayName'];
 
 class HttpError extends Error { constructor(status, message, extra) { super(message); this.status = status; this.extra = extra || {}; } }
@@ -331,7 +331,7 @@ function pubItem(it) {
     o.durations = (Array.isArray(it.durations) ? it.durations : []).map(d => ({ m: int(d?.m), price: round2(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).sort((a, b) => a.m - b.m).slice(0, 24);
     o.stock = Math.max(0, int(it.stock)); o.maxMonths = Math.max(0, int(it.maxMonths));
     const un = new Map((Array.isArray(it.untilN) ? it.untilN : []).map(u => [int(u?.d), Math.max(0, int(u?.n))]));
-    o.untils = (Array.isArray(it.untils) ? it.untils : []).map(u => ({ d: int(u?.d), price: round2(u?.price) })).filter(u => u.price > 0 && u.d > Date.now() + 12 * 3600e3).sort((a, b) => a.d - b.d).slice(0, 6).map(u => ({ ...u, n: un.get(u.d) || 0 }));
+    o.untils = (Array.isArray(it.untils) ? it.untils : []).map(u => ({ d: int(u?.d), price: untilPrice(it, u) })).filter(u => u.price > 0 && u.d > Date.now() + 12 * 3600e3).sort((a, b) => a.d - b.d).slice(0, 40).map(u => ({ ...u, n: un.get(u.d) || 0 }));
   } else if (it.type === 'code') {
     o.price = round2(it.price); o.stock = Math.max(0, int(it.stock)); o.maxQty = Math.min(10, Math.max(1, int(it.maxQty) || 10));
   } else if (it.type === 'number') {
@@ -395,6 +395,8 @@ const itemWarranty = it => { const v = it?.warranty; return v === undefined || v
 // ملفي تضمن (وتحجز الفلوس) أقل قيمة بين ضمان التاجر ومدة ضمان ملفي
 const holdDaysOf = (o, p) => o?.holdDays != null ? Math.max(0, int(o.holdDays)) : warrantyDays(p);
 const merchDaysOf = (o, p) => o?.wDays != null ? Math.max(0, int(o.wDays)) : warrantyDays(p);
+// سعر «لين التاريخ» يتحسب وقت الطلب: سعر الشهر ÷ 30 × الأيام الباقية
+const untilPrice = (it, u, now = Date.now()) => num(it?.monthPrice) > 0 ? round2(num(it.monthPrice) / 30 * Math.max(1, Math.round((int(u.d) - now) / DAY))) : round2(u.price);
 const minPayout = (p, cur) => Math.max(0, round2(p?.minPayout?.[cur]));
 const awaitHours = p => Math.min(168, Math.max(1, int(p?.awaitHours) || 24));
 async function purgeStore(slug) { forget('cat:' + slug); forget('ctx:' + slug); }
@@ -483,7 +485,7 @@ async function createOrder(req, env, fs, slug, ectx) {
         const byDate = /^d\d{10,15}$/.test(String(l.opt || ''));
         const months = byDate ? 0 : int(l.opt), until = byDate ? int(String(l.opt).slice(1)) : 0;
         const dur = byDate
-          ? (Array.isArray(it.untils) ? it.untils : []).filter(u => int(u?.d) === until && num(u?.price) > 0 && until > now + 12 * 3600e3).map(u => ({ price: u.price }))[0]
+          ? (Array.isArray(it.untils) ? it.untils : []).filter(u => int(u?.d) === until && num(u?.price) > 0 && until > now + 12 * 3600e3).map(u => ({ price: untilPrice(it, u, now) }))[0]
           : (Array.isArray(it.durations) ? it.durations : []).find(d => int(d?.m) === months && num(d?.price) > 0);
         if (!dur || (!byDate && (months < 1 || months > 24))) throw new HttpError(409, `المدة المختارة لـ ${nm} ما عادتش متاحة.`, { code: 'stale' });
         if (l.qty > 5) throw new HttpError(400, `أقصى كمية من ${nm} هي 5.`);
@@ -1195,7 +1197,8 @@ function cleanItem(x, cats) {
   if (type === 'account') {
     it.productIds = (Array.isArray(x.productIds) ? x.productIds : []).map(String).filter(p => ID_RE.test(p)).slice(0, 10);
     it.durations = (Array.isArray(x.durations) ? x.durations : []).map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 24);
-    it.untils = (Array.isArray(x.untils) ? x.untils : []).map(u => ({ d: int(u?.d), price: posNum(u?.price) })).filter(u => u.d > Date.now() - DAY && u.d < Date.now() + 400 * DAY && u.price > 0).slice(0, 6);
+    it.untils = (Array.isArray(x.untils) ? x.untils : []).map(u => ({ d: int(u?.d), price: posNum(u?.price) })).filter(u => u.d > Date.now() - DAY && u.d < Date.now() + 800 * DAY && u.price > 0).slice(0, 40);
+    it.durMonths = (Array.isArray(x.durMonths) ? x.durMonths : []).map(int).filter(m => m >= 1 && m <= 24).slice(0, 24);
     if (!it.productIds.length) throw new HttpError(400, 'اختار حساب واحد على الأقل.');
     if (!it.durations.length && !it.untils.length) throw new HttpError(400, 'حط سعر لمدة وحدة على الأقل، أو تاريخ انتهاء بسعره.');
   } else if (type === 'code') {
@@ -1217,7 +1220,11 @@ function cleanStock(x, type) {
   const o = { stock: Math.max(0, Math.min(100000, int(x.stock))) };
   if (type === 'account') {
     o.maxMonths = Math.max(0, Math.min(24, int(x.maxMonths)));
-    o.untilN = (Array.isArray(x.untilN) ? x.untilN : []).map(u => ({ d: int(u?.d), n: Math.max(0, int(u?.n)) })).filter(u => u.d > 0).slice(0, 6);
+    o.untilN = (Array.isArray(x.untilN) ? x.untilN : []).map(u => ({ d: int(u?.d), n: Math.max(0, int(u?.n)) })).filter(u => u.d > 0).slice(0, 40);
+    // المدد والتواريخ تنحسب من مخزون التاجر (سعر الشهر ÷ 30 × الأيام)
+    if (Array.isArray(x.untils)) o.untils = x.untils.map(u => ({ d: int(u?.d), price: posNum(u?.price) })).filter(u => u.d > Date.now() - DAY && u.d < Date.now() + 800 * DAY && u.price > 0).slice(0, 40);
+    if (Array.isArray(x.durations)) o.durations = x.durations.map(d => ({ m: int(d?.m), price: posNum(d?.price) })).filter(d => d.m >= 1 && d.m <= 24 && d.price > 0).slice(0, 24);
+    if (x.monthPrice != null) o.monthPrice = posNum(x.monthPrice);
   }
   if (type === 'number') {
     o.countries = (Array.isArray(x.countries) ? x.countries : []).map(c => ({ country: clean(c?.country, 40), n: Math.max(0, int(c?.n)) })).filter(c => c.country).slice(0, 100);

@@ -2,7 +2,7 @@
 import {
   db, $, $$, esc, num, icon, toast, modal, confirmBox, busy, empty, skeleton, fmtDate, fmtShort, ago, tsMs, DAY, addMonths, monthsTxt,
   toInput, fromInput, normPhone, waLink, copyText, compressImage, safeImg, apiPost, storeUrl, ROOT_DOMAIN, t, isEN, pushCardHTML,
-  collection, doc, onSnapshot, query, where, setDoc, getDoc
+  collection, doc, onSnapshot, query, where, setDoc, getDoc, updateDoc
 } from './core.js';
 import { TEMPLATES, PALETTES, FONTS, CARDS, CORNERS, SECTIONS, CAT_ICONS, normDesign, normSections, colorsOf, ic as sic } from './store-theme.js';
 
@@ -92,22 +92,46 @@ export function scheduleSync() { clearTimeout(M.syncT); M.syncT = setTimeout(syn
 const maskNumber = n => { const s = String(n || ''); const total = (s.match(/\d/g) || []).length; let i = 0; return s.replace(/\d/g, c => { const k = i++; return k < 3 || k >= total - 2 ? c : '•'; }); };
 // شهر = 30 يوم بالضبط
 function monthsAvail(accountEnd) { const now = Date.now(); let m = 0; while (m < 24 && now + (m + 1) * 30 * DAY - DAY <= accountEnd) m++; return m; }
+// المدد والتواريخ تنحسب من مخزون ملفي: كل حساب يطلع بتاريخ نهايته، والسعر = سعر الشهر ÷ 30 × الأيام
+// سعر الشهر في المتجر = «الملف شهرياً» في حسابات ملفي
+async function syncAccPrice(ids, price) {
+  const ps = A.S.products.filter(p => ids.includes(p.id) && round2(p.fileSellPrice) !== price);
+  for (const p of ps) { try { await updateDoc(doc(db, 'merchants', uid(), 'products', p.id), { fileSellPrice: price }); } catch (e) { console.warn('price link', e); } }
+}
+const durLbl = d => { const m = Math.floor(d / 30), r = d % 30; const mt = m ? t(monthsTxt(m)) : ''; const rt = r ? `${r} ${r === 1 ? t('يوم') : r === 2 ? t('يومين') : r <= 10 ? t('أيام') : t('يوم')}` : ''; return m && r ? `${mt} ${t('و')}${rt}` : mt || rt; };
+function linkedAccounts(it) { const pids = new Set(it.productIds || []); return A.S.products.filter(p => pids.has(p.id) && p.type === 'account'); }
+function monthPriceOf(it) {
+  const ps = linkedAccounts(it).map(p => round2(p.fileSellPrice)).filter(x => x > 0);
+  if (!ps.length) return round2(it.monthPrice) || 0;
+  const cnt = {}; ps.forEach(x => cnt[x] = (cnt[x] || 0) + 1);
+  return +Object.entries(cnt).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+}
+function accountStock(it) {
+  const S = A.S, now = Date.now(), prods = linkedAccounts(it), mp = monthPriceOf(it);
+  let stock = 0, maxMonths = 0;
+  const byEnd = new Map();
+  prods.forEach(p => {
+    const end = +p.accountEnd || 0;
+    const av = S.files.filter(f => f.productId === p.id && f.status === 'available').length;
+    if (!av || end <= now + DAY) return;
+    const mm = monthsAvail(end);
+    if (mm >= 1) { stock += av; maxMonths = Math.max(maxMonths, mm); }
+    const days = Math.round((end - now) / DAY);
+    const price = round2((round2(p.fileSellPrice) || mp) / 30 * days);
+    const x = byEnd.get(end) || { d: end, price: 0, n: 0 };
+    x.price = Math.max(x.price, price); x.n += av; byEnd.set(end, x);
+  });
+  const months = (it.durMonths && it.durMonths.length ? it.durMonths : (it.durations || []).map(d => d.m)).filter(m => m >= 1 && m <= 24);
+  const durations = mp > 0 ? [...new Set(months)].sort((a, b) => a - b).map(m => ({ m, price: round2(mp * m) })) : [];
+  const exact = new Set(durations.map(d => d.m * 30));
+  const list = [...byEnd.values()].filter(u => u.price > 0 && !exact.has(Math.round((u.d - now) / DAY))).sort((a, b) => a.d - b.d).slice(0, 40);
+  return { stock, maxMonths, monthPrice: mp, durations, untils: list.map(u => ({ d: u.d, price: u.price })), untilN: list.map(u => ({ d: u.d, n: u.n })) };
+}
 function computeStock(it) {
   const S = A.S;
   if (it.type === 'code') return { stock: S.codes.filter(c => c.productId === it.productId && c.status === 'available').length };
   if (it.type === 'account') {
-    const pids = new Set(it.productIds || []);
-    let stock = 0, maxMonths = 0;
-    const ends = [];
-    S.files.forEach(f => {
-      if (!pids.has(f.productId) || f.status !== 'available') return;
-      const p = S.products.find(x => x.id === f.productId); if (!p || p.type !== 'account') return;
-      ends.push(+p.accountEnd || 0);
-      const mm = monthsAvail(p.accountEnd); if (mm < 1) return;
-      stock++; maxMonths = Math.max(maxMonths, mm);
-    });
-    const untilN = (it.untils || []).map(u => ({ d: u.d, n: ends.filter(e => e >= u.d).length }));
-    return { stock, maxMonths, untilN };
+    return accountStock(it);
   }
   if (it.type === 'number') {
     const av = S.numbers.filter(n => n.status === 'available');
@@ -348,11 +372,11 @@ function itemForm(it) {
     const names = [...new Set(accs.map(p => p.name))];
     body = accs.length ? `<label class="small muted" style="display:block;margin-bottom:8px">${t('الحسابات اللي يتسلّم منها (يختار النظام ملف متاح تلقائياً)')}</label>
       <div class="chips" style="margin-bottom:14px">${names.map(n => `<button type="button" class="chip ${(it.productIds || []).some(id => accs.find(p => p.id === id)?.name === n) ? 'on' : ''}" data-accname="${esc(n)}"><span data-raw>${esc(n)}</span>&nbsp;<span class="dim">${accs.filter(p => p.name === n).length}</span></button>`).join('')}</div>
-      <label class="small muted" style="display:block;margin-bottom:8px">${t('المدد: اضغط على المدة اللي تبيها وحط سعرها')}</label>
-      ${monthChips((it.durations || []).map(d => d.m), true)}
-      <div id="ifDurRows" style="margin-top:10px">${(it.durations || []).slice().sort((a, b) => a.m - b.m).map(durRow).join('')}</div>
-      <div id="ifUntils">${(it.untils || []).filter(u => u.d > Date.now()).map(untilRow).join('')}</div>
-      <p class="hint" style="margin:6px 0 14px">${t('الشهر = 30 يوم. «مدة معينة» للحسابات اللي باقيلها أقل من شهر: تختار تاريخ النهاية من التقويم وتحط سعره، والزبون يشوف «لين التاريخ». المدد 7 أيام أو أقل ملفي ما تضمنهاش.')}</p>`
+      <div class="field"><label>${t('سعر الشهر للملف')} <span class="dim">(30 ${t('يوم')})</span></label><input id="ifMP" inputmode="decimal" dir="ltr" value="${monthPriceOf(it) || ''}" placeholder="15"></div>
+      <label class="small muted" style="display:block;margin-bottom:8px">${t('المدد اللي تظهر للزبون')}</label>
+      ${monthChips(it.durMonths?.length ? it.durMonths : (it.durations || []).map(d => d.m), false)}
+      <div id="ifAuto" class="autobox"></div>
+      <p class="hint" style="margin:6px 0 14px">${t('كل الأسعار تنحسب من سعر الشهر: الشهر 30 يوم، والأيام = سعر الشهر ÷ 30 × الأيام. وكل حساب في مخزونك يطلع للزبون بتاريخ نهايته وأيامه الباقية لحاله. سعر الشهر مربوط بـ«الملف شهرياً» في حساباتك، لو غيرته هنا يتغير هناك والعكس. المدد 7 أيام أو أقل ملفي ما تضمنهاش.')}</p>`
       : `<p class="t-bad" style="margin-bottom:14px">${t('ما عندكش حسابات. أضف حساب من صفحة المنتجات أولاً.')}</p>`;
   } else if (type === 'code') {
     body = codes.length ? `<div class="field"><label>${t('فئة الأكواد')}</label><select id="ifProd">${codes.map(p => `<option value="${esc(p.id)}" ${it.productId === p.id ? 'selected' : ''} data-raw>${esc(p.name)} (${S.codes.filter(c => c.productId === p.id && c.status === 'available').length})</option>`).join('')}</select></div>
@@ -402,28 +426,30 @@ function itemForm(it) {
   $$('[data-accname]', el).forEach(b => b.onclick = () => b.classList.toggle('on'));
   let mode = it.mode || 'country';
   $$('[data-mode]', el).forEach(b => b.onclick = () => { mode = b.dataset.mode; $$('[data-mode]', el).forEach(x => x.classList.toggle('on', x === b)); $('#ifCtry', el).hidden = mode === 'pick'; $('#ifPickHint', el).hidden = mode !== 'pick'; });
-  const openCal = i => { try { i.showPicker(); } catch { i.focus(); } };
-  if (type === 'account') bindMonthChips(el, {
-    onToggle: (m, b) => {
-      const row = $(`.durrow[data-m="${m}"]`, el);
-      if (row) { row.remove(); b.classList.remove('on'); return; }
-      b.classList.add('on');
-      const rows = $$('.durrow', el), after = rows.filter(r => +r.dataset.m < m).pop();
-      const html = durRow({ m });
-      if (after) after.insertAdjacentHTML('afterend', html); else $('#ifDurRows', el).insertAdjacentHTML('afterbegin', html);
-      setTimeout(() => $(`.durrow[data-m="${m}"] [data-dp]`, el)?.focus(), 30);
-    },
-    onCustom: () => {
-      if ($$('.untilrow', el).length >= 6) { toast(t('أقصى حد 6 تواريخ.'), 'bad'); return; }
-      $('#ifUntils', el).insertAdjacentHTML('beforeend', untilRow({}));
-      const inp = $$('.untilrow [data-ud]', el).pop(); setTimeout(() => openCal(inp), 30);
-    }
-  });
-  el.addEventListener('click', e => { const r = e.target.closest('[data-rmdur]'); if (r) { const row = r.closest('.durrow'); $(`[data-mc="${row.dataset.m}"]`, el)?.classList.remove('on'); row.remove(); } });
+  const autoPrev = () => {
+    const box = $('#ifAuto', el); if (!box) return;
+    const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
+    const tmp = { productIds: accs.filter(p => names.includes(p.name)).map(p => p.id), durMonths: $$('[data-mc].on', el).map(b => +b.dataset.mc), monthPrice: round2(num($('#ifMP', el).value)) };
+    const mp = round2(num($('#ifMP', el).value));
+    const st = accountStock({ ...tmp, durMonths: tmp.durMonths });
+    const durs = mp > 0 ? tmp.durMonths.sort((a, b) => a - b).map(m => ({ m, price: round2(mp * m) })) : [];
+    const days = d => Math.round((d - Date.now()) / DAY);
+    box.innerHTML = (durs.length || st.untils.length) ? `<div class="autolist">${durs.map(d => `<div><span>${t(monthsTxt(d.m))} <small class="dim">${d.m * 30} ${t('يوم')}</small></span><b class="num">${money(d.price)}</b></div>`).join('')}
+      ${st.untils.map((u, i) => `<div><span>${t('لين')} ${fmtShort(u.d)} <small class="dim">${durLbl(days(u.d))} · ${st.untilN[i].n} ${t('ملف')}${days(u.d) <= 7 ? ' · ' + t('بدون ضمان ملفي') : ''}</small></span><b class="num">${money(mp > 0 ? round2(mp / 30 * days(u.d)) : u.price)}</b></div>`).join('')}</div>`
+      : `<p class="hint">${t('اختار الحسابات وحط سعر الشهر، وتطلع هنا المدد والأسعار اللي يشوفها الزبون.')}</p>`;
+  };
+  if (type === 'account') {
+    bindMonthChips(el, { onToggle: (m, b) => { b.classList.toggle('on'); autoPrev(); } });
+    $('#ifMP', el).oninput = autoPrev;
+    $$('[data-accname]', el).forEach(b => b.addEventListener('click', () => setTimeout(autoPrev)));
+    autoPrev();
+  }
+
   const ap = $('#ifAddPack', el); if (ap) ap.onclick = () => { if ($$('.packrow', el).length < 20) $('#ifPacks', el).insertAdjacentHTML('beforeend', packRow({})); };
   const af = $('#ifAddField', el); if (af) af.onclick = () => { if ($$('.fieldrow', el).length < 4) $('#ifFields', el).insertAdjacentHTML('beforeend', fieldRow({})); };
   el.addEventListener('click', e => { const d = e.target.closest('[data-rm]'); if (d) d.closest('.frow').remove(); });
   $('#ifGo', el).onclick = e => busy(e.currentTarget, async () => {
+    let linkPrice = null;
     const d = {
       type, name: $('#ifName', el).value.trim().slice(0, 80), desc: $('#ifDesc', el).value.trim().slice(0, 800), cat: $('#ifCat', el).value, image: image || '', imgV: image ? (image === safeImg(it.image) ? (it.imgV || Date.now()) : Date.now()) : 0,
       note: $('#ifNote', el).value.trim().slice(0, 300), order: Math.floor(num($('#ifOrder', el).value)), featured: $('#ifFeat', el).checked, active: $('#ifAct', el).checked, updatedAt: Date.now()
@@ -436,14 +462,18 @@ function itemForm(it) {
     if (type === 'account') {
       const names = $$('[data-accname].on', el).map(b => b.dataset.accname);
       d.productIds = accs.filter(p => names.includes(p.name)).map(p => p.id).slice(0, 10);
-      if ($$('.durrow', el).some(r => !(num($('[data-dp]', r).value) > 0))) throw new Error(t('حط سعر لكل مدة اخترتها، أو شيلها.'));
-      d.durations = $$('.durrow', el).map(r => ({ m: +r.dataset.m, price: round2(num($('[data-dp]', r).value)) })).filter(x => x.price > 0);
-      d.untils = $$('.untilrow', el).map(r => ({ d: fromInput($('[data-ud]', r).value), price: round2(num($('[data-up]', r).value)) })).filter(u => u.d && u.price > 0);
-      if ($$('.untilrow', el).some(r => ($('[data-ud]', r).value && !(num($('[data-up]', r).value) > 0)) || (!$('[data-ud]', r).value && num($('[data-up]', r).value) > 0))) throw new Error(t('كل تاريخ لازم يكون معاه سعر.'));
-      if (d.untils.some(u => u.d <= Date.now())) throw new Error(t('التاريخ لازم يكون بعد اليوم.'));
+      d.monthPrice = round2(num($('#ifMP', el).value));
+      d.durMonths = $$('[data-mc].on', el).map(b => +b.dataset.mc).sort((a, b) => a - b);
       if (!d.productIds.length) throw new Error(t('اختار حساب واحد على الأقل.'));
       if (accs.filter(p => names.includes(p.name)).length > 10) throw new Error(t('أقصى حد 10 حسابات للمنتج الواحد.'));
-      if (!d.durations.length && !d.untils.length) throw new Error(t('حط سعر لمدة وحدة على الأقل، أو تاريخ انتهاء بسعره.'));
+      if (!(d.monthPrice > 0)) { $('#ifMP', el).focus(); throw new Error(t('حط سعر الشهر للملف.')); }
+      // نربط سعر الشهر بـ«الملف شهرياً» في الحسابات
+      linkPrice = { ids: d.productIds, price: d.monthPrice };
+      Object.assign(d, accountStock({ ...d, productIds: d.productIds }), { monthPrice: d.monthPrice });
+      d.durations = d.durMonths.map(m => ({ m, price: round2(d.monthPrice * m) }));
+      const now = Date.now();
+      d.untils = (d.untils || []).map(u => ({ d: u.d, price: round2(d.monthPrice / 30 * Math.round((u.d - now) / DAY)) }));
+      if (!d.durations.length && !d.untils.length) throw new Error(t('اختار مدة وحدة على الأقل، أو ضيف حسابات فيها أيام باقية.'));
     } else if (type === 'code') {
       d.productId = $('#ifProd', el)?.value || ''; d.price = round2(num($('#ifPrice', el)?.value)); d.maxQty = Math.min(10, Math.max(1, Math.floor(num($('#ifMax', el)?.value)) || 10));
       if (!d.productId) throw new Error(t('اختار فئة الأكواد.'));
@@ -459,6 +489,7 @@ function itemForm(it) {
     }
     Object.assign(d, computeStock({ ...it, ...d }));
     await apiPost('/m/items/save', { id: ed ? it.id : '', item: d });
+    if (linkPrice) await syncAccPrice(linkPrice.ids, linkPrice.price);
     m.close(); toast(t('تم الحفظ'));
   });
 }

@@ -654,3 +654,9 @@ td .price{color:var(--amber-t);font-weight:600}
 .durrow .dlbl{display:flex;flex-direction:column;min-width:92px;line-height:1.3}
 .durrow .dlbl small{font-size:11.5px}
 .chip .ic{width:15px;height:15px}
+/* v13: المدد الأوتوماتيكية من المخزون */
+.autobox{margin-top:10px}
+.autolist{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.autolist>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-top:1px solid var(--line);font-size:14px}
+.autolist>div:first-child{border-top:0}
+.autolist small{display:block;font-size:11.5px;margin-top:2px}

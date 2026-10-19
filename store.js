@@ -11,6 +11,7 @@ const money = (n, cur) => `⁦${fmt(n)} ${SYM[cur || B.store.currency] || ''}�
 const monthsTxt = m => m === 1 ? 'شهر' : m === 2 ? 'شهرين' : m <= 10 ? `${m} أشهر` : `${m} شهر`;
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 const dayTxt = ms => { const d = new Date(ms); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const durLabel = d => { const m = Math.floor(d / 30), r = d % 30; const mt = m ? monthsTxt(m) : '', rt = r ? (r === 1 ? 'يوم' : r === 2 ? 'يومين' : r <= 10 ? `${r} أيام` : `${r} يوم`) : ''; return m && r ? `${mt} و${rt}` : mt || rt; };
 const untilDays = d => Math.max(1, Math.round((d - Date.now()) / 864e5));
 const when = ms => { if (!ms) return ''; const d = new Date(ms); return `${d.getDate()} ${MONTHS[d.getMonth()]}، ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const IMG_OK = v => typeof v === 'string' && (/^\/img\/[A-Za-z0-9/_-]+(\?v=\d+)?$/.test(v) || /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v)) ? v : '';
@@ -185,7 +186,7 @@ function prodHTML(id) {
   let opts = '', note = '';
   const radio = (on, act, val, label, price, disabled, small = '') => `<button type="button" class="opt ${on ? 'on' : ''}" data-a="${act}" data-v="${esc(val)}" ${disabled ? 'disabled' : ''}><span class="rad"></span><span class="grow">${label}${small ? `<small>${small}</small>` : ''}</span><b class="num">${money(price)}</b></button>`;
   if (it.type === 'account') {
-    opts = `<div class="lbl">اختار المدة</div>${(it.durations || []).map(d => radio(s.m === d.m, 'm', d.m, monthsTxt(d.m), d.price, d.m > (it.maxMonths || 0) || !(it.stock > 0), d.m > (it.maxMonths || 0) ? 'غير متاحة حالياً' : `${d.m * 30} يوم`)).join('')}${(it.untils || []).map(u => radio(s.m === 'd' + u.d, 'm', 'd' + u.d, `لين ${dayTxt(u.d)}`, u.price, !(u.n > 0), u.n > 0 ? `${untilDays(u.d)} يوم${untilDays(u.d) <= 7 ? ' · بدون ضمان ملفي' : ''}` : 'غير متاحة حالياً')).join('')}`;
+    opts = `<div class="lbl">اختار المدة</div>${(it.durations || []).map(d => radio(s.m === d.m, 'm', d.m, monthsTxt(d.m), d.price, d.m > (it.maxMonths || 0) || !(it.stock > 0), d.m > (it.maxMonths || 0) ? 'غير متاحة حالياً' : `${d.m * 30} يوم`)).join('')}${(it.untils || []).map(u => radio(s.m === 'd' + u.d, 'm', 'd' + u.d, `لين ${dayTxt(u.d)}`, u.price, !(u.n > 0), u.n > 0 ? `${durLabel(untilDays(u.d))}${untilDays(u.d) <= 7 ? ' · بدون ضمان ملفي' : ''}` : 'غير متاحة حالياً')).join('')}`;
     note = `<div class="note info">${ic('bolt')}<span>يوصلك فوراً بعد تأكيد الدفع: الإيميل، كلمة المرور، ورقم الملف.</span></div>`;
   } else if (it.type === 'code') {
     note = `<div class="note info">${ic('bolt')}<span>الكود يوصلك فوراً بعد تأكيد الدفع.</span></div>`;
