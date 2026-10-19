@@ -352,27 +352,33 @@ export async function ensureUserDoc(u, extra = {}) {
 // نقبل بس صور data:image حتى ما يتحقنش رابط غريب
 export const safeImg = v => (typeof v === 'string' && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(v)) ? v : '';
 // ضغط الصورة في المتصفح وتحويلها لـ data URL صغير (يتخزن في Firestore بدون Storage)
+// ضغط الصور: يجرب أحجام وجودات أقل لين يوصل للحد المسموح (يخدم على الآيفون اللي ما يدعمش webp)
 export function compressImage(file, max = 240, maxBytes = 300000) {
   return new Promise((res, rej) => {
-    if (!file || !/^image\//.test(file.type)) return rej(new Error('اختار ملف صورة.'));
-    const r = new FileReader();
-    r.onerror = () => rej(new Error('تعذر قراءة الصورة.'));
-    r.onload = () => {
-      const img = new Image();
-      img.onerror = () => rej(new Error('صيغة الصورة غير مدعومة.'));
-      img.onload = () => {
-        const k = Math.min(1, max / Math.max(img.width, img.height));
-        const c = document.createElement('canvas');
-        c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        let out = c.toDataURL('image/webp', 0.85);
-        if (!out.startsWith('data:image/webp')) out = c.toDataURL('image/png');
-        if (out.length > maxBytes) { out = c.toDataURL('image/jpeg', 0.75); if (out.length > maxBytes) return rej(new Error('الصورة كبيرة، جرّب صورة أبسط.')); }
-        res(out);
-      };
-      img.src = r.result;
+    if (!file) return rej(new Error('اختار ملف صورة.'));
+    const looksImg = /^image\//.test(file.type || '') || /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i.test(file.name || '');
+    if (!looksImg) return rej(new Error('اختار ملف صورة.'));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('صيغة الصورة هذي ما تنفعش. صوّرها Screenshot أو حوّلها لـ JPG وجرّب مرة ثانية.')); };
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+      if (!W || !H) return rej(new Error('تعذر قراءة الصورة.'));
+      const c = document.createElement('canvas'), g = c.getContext('2d');
+      for (const f of [1, .8, .65, .5, .38, .28]) {
+        const k = Math.min(1, (max * f) / Math.max(W, H));
+        c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+        g.clearRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        for (const q of [.85, .7, .55]) { const o = c.toDataURL('image/webp', q); if (o.startsWith('data:image/webp') && o.length <= maxBytes) return res(o); }
+        if (f === 1) { const p = c.toDataURL('image/png'); if (p.length <= maxBytes) return res(p); }
+        // JPG بخلفية بيضاء (الشفافية تولي سوداء في JPG)
+        g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        for (const q of [.82, .7, .58, .46]) { const o = c.toDataURL('image/jpeg', q); if (o.length <= maxBytes) return res(o); }
+      }
+      rej(new Error('تعذر تصغير الصورة. جرّب صورة ثانية.'));
     };
-    r.readAsDataURL(file);
+    img.src = url;
   });
 }
 

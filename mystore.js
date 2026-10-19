@@ -102,7 +102,12 @@ const durLbl = d => { const m = Math.floor(d / 30), r = d % 30; const mt = m ? t
 function linkedAccounts(it) { const pids = new Set(it.productIds || []); return A.S.products.filter(p => pids.has(p.id) && p.type === 'account'); }
 function monthPriceOf(it) {
   const ps = linkedAccounts(it).map(p => round2(p.fileSellPrice)).filter(x => x > 0);
-  if (!ps.length) return round2(it.monthPrice) || 0;
+  if (!ps.length) {
+    if (round2(it.monthPrice) > 0) return round2(it.monthPrice);
+    // منتجات قديمة: من سعر أقصر مدة محطوطة (مقسوم على عدد أشهرها)
+    const d = (it.durations || []).filter(x => x.price > 0 && x.m >= 1).sort((a, b) => a.m - b.m)[0];
+    return d ? round2(d.price / d.m) : 0;
+  }
   const cnt = {}; ps.forEach(x => cnt[x] = (cnt[x] || 0) + 1);
   return +Object.entries(cnt).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
 }
